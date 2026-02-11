@@ -96,6 +96,35 @@
     color:var(--muted);
     font-weight:600;
   }
+  .exitClockRow{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    font-size:13px;
+    font-weight:800;
+  }
+  .exitPlan{
+    color:var(--muted);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:5px 10px;
+  }
+  .exitCountdown{
+    color:var(--good);
+    border:1px solid rgba(52,211,153,.4);
+    border-radius:999px;
+    padding:5px 10px;
+    min-width:120px;
+    text-align:center;
+  }
+  .exitCountdown.overdue{
+    color:var(--bad);
+    border-color:rgba(251,113,133,.5);
+    background:rgba(251,113,133,.08);
+  }
+  .exitCountdown.frozen{
+    opacity:.75;
+  }
   
   .topRight{
     display:flex;
@@ -191,6 +220,84 @@
     flex-direction:column;
     gap:10px;
     margin-top:8px;
+  }
+  .weatherVisual{
+    position:relative;
+    height:90px;
+    margin-top:12px;
+    border:1px solid var(--line);
+    border-radius:16px;
+    background:linear-gradient(180deg, rgba(125,211,252,.08), rgba(125,211,252,.02));
+    overflow:hidden;
+  }
+  .sunCore,.sunRay,.cloudMain,.rainDrop,.windLine{ position:absolute; }
+  .sunCore{
+    width:30px; height:30px; border-radius:999px;
+    background:#fbbf24;
+    top:18px; right:26px;
+    opacity:.15;
+    transform:scale(.8);
+  }
+  .sunRay{
+    width:52px; height:52px; border-radius:999px;
+    border:2px dashed rgba(251,191,36,.7);
+    top:7px; right:14px;
+    opacity:0;
+  }
+  .cloudMain{
+    width:70px; height:26px;
+    background:rgba(226,232,240,.55);
+    border-radius:999px;
+    left:22px; top:35px;
+    box-shadow: 18px -10px 0 0 rgba(226,232,240,.55), 36px 0 0 0 rgba(226,232,240,.55);
+    opacity:.25;
+  }
+  .rainDrop{
+    width:3px; height:14px;
+    background:rgba(125,211,252,.9);
+    border-radius:999px;
+    top:50px;
+    opacity:0;
+  }
+  .rainDrop.r1{ left:42px }
+  .rainDrop.r2{ left:62px }
+  .rainDrop.r3{ left:84px }
+  .windLine{
+    width:38px;
+    height:2px;
+    border-radius:999px;
+    background:rgba(125,211,252,.85);
+    right:12px;
+    opacity:0;
+  }
+  .windLine.w1{ top:58px }
+  .windLine.w2{ top:70px; width:28px; right:18px; }
+  .weatherVisual.weather-sun .sunCore{
+    opacity:1;
+    animation:pulseSun 3s ease-in-out infinite;
+  }
+  .weatherVisual.weather-sun .sunRay{
+    opacity:.9;
+    animation:spinSun 7s linear infinite;
+  }
+  .weatherVisual.weather-rain .cloudMain,
+  .weatherVisual.weather-cloud .cloudMain{
+    opacity:.9;
+    animation:driftCloud 5s ease-in-out infinite;
+  }
+  .weatherVisual.weather-rain .rainDrop{
+    opacity:1;
+    animation:rainDrop 1.2s linear infinite;
+  }
+  .weatherVisual.weather-rain .rainDrop.r2{ animation-delay:.2s }
+  .weatherVisual.weather-rain .rainDrop.r3{ animation-delay:.4s }
+  .weatherVisual.weather-wind .windLine{
+    opacity:1;
+    animation:windMove 1.4s ease-in-out infinite;
+  }
+  .weatherVisual.weather-wind .windLine.w2{ animation-delay:.3s }
+  .weatherVisual.weather-cloud .sunCore{
+    opacity:.4;
   }
   .row{
     display:flex;
@@ -296,6 +403,28 @@
     border-radius:14px;
     color:var(--text);
     min-height:120px;
+  }
+  .dualGrid{
+    display:grid;
+    grid-template-columns:1fr;
+    gap:14px;
+  }
+  .stackCol{
+    border:1px solid var(--line);
+    border-radius:16px;
+    padding:12px;
+    background:rgba(0,0,0,.05);
+  }
+  .goodLuckBanner{
+    margin-top:12px;
+    border:1px solid rgba(52,211,153,.55);
+    background:rgba(52,211,153,.14);
+    border-radius:14px;
+    text-align:center;
+    font-size:32px;
+    font-weight:900;
+    letter-spacing:1px;
+    padding:12px;
   }
   
   .footer{
@@ -406,6 +535,7 @@
   }
   @media (min-width: 980px){
     .modalGrid{ grid-template-columns: 1fr 1fr; }
+    .dualGrid{ grid-template-columns: 1fr 1fr; }
   }
   
   .panel{
@@ -496,5 +626,29 @@
   @media (prefers-reduced-motion: reduce){
     .pixel-wrap, .card:hover { animation:none; transition:none }
     .colon{ transition:none }
+    .weatherVisual *{ animation:none !important; transition:none !important; }
+  }
+
+  @keyframes pulseSun{
+    0%,100%{ transform:scale(.95) }
+    50%{ transform:scale(1.06) }
+  }
+  @keyframes spinSun{
+    from{ transform:rotate(0deg) }
+    to{ transform:rotate(360deg) }
+  }
+  @keyframes driftCloud{
+    0%,100%{ transform:translateX(0) }
+    50%{ transform:translateX(10px) }
+  }
+  @keyframes rainDrop{
+    0%{ transform:translateY(-2px); opacity:0 }
+    25%{ opacity:1 }
+    100%{ transform:translateY(18px); opacity:0 }
+  }
+  @keyframes windMove{
+    0%{ transform:translateX(0); opacity:.15 }
+    50%{ transform:translateX(-7px); opacity:1 }
+    100%{ transform:translateX(0); opacity:.15 }
   }
   
