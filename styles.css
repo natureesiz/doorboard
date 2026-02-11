@@ -42,6 +42,19 @@
     touch-action:manipulation;
   }
 
+  body.late-mode{
+    --bg:#140c0d;
+    --panel:#231315;
+    --panel2:#1b1012;
+    --text:#ffecef;
+    --muted:#e3b3bd;
+    --line:rgba(255, 146, 164, .24);
+    --accent:#ff8fa2;
+    --good:#f9738f;
+    --bad:#fb7185;
+    --shadow: 0 12px 30px rgba(40, 6, 12, .45);
+  }
+
   body.modal-open{
     overflow:hidden;
   }
@@ -62,7 +75,7 @@
       calc(env(safe-area-inset-right) + 14px)
       calc(env(safe-area-inset-bottom) + 14px)
       calc(env(safe-area-inset-left) + 14px);
-    animation: pageIn .45s ease-out both;
+    animation:none;
   }
   
   @keyframes pageIn{
@@ -76,6 +89,7 @@
     justify-content:space-between;
     gap:16px;
     margin-bottom:14px;
+    animation:fadeSlideIn .35s ease both;
   }
   
   .timeblock{display:flex; flex-direction:column; gap:6px}
@@ -96,42 +110,65 @@
     color:var(--muted);
     font-weight:600;
   }
-  .exitClockRow{
-    display:flex;
-    gap:10px;
-    flex-wrap:wrap;
-    font-size:13px;
-    font-weight:800;
-  }
-  .exitPlan{
-    color:var(--muted);
-    border:1px solid var(--line);
-    border-radius:999px;
-    padding:5px 10px;
-  }
-  .exitCountdown{
-    color:var(--good);
-    border:1px solid rgba(52,211,153,.4);
-    border-radius:999px;
-    padding:5px 10px;
-    min-width:120px;
-    text-align:center;
-  }
-  .exitCountdown.overdue{
-    color:var(--bad);
-    border-color:rgba(251,113,133,.5);
-    background:rgba(251,113,133,.08);
-  }
-  .exitCountdown.frozen{
-    opacity:.75;
-  }
-  
   .topRight{
     display:flex;
     flex-direction:column;
     align-items:flex-end;
     gap:8px;
   }
+  .controlRow{
+    display:flex;
+    align-items:flex-start;
+    gap:12px;
+  }
+  .leaveBlock{
+    border:1px solid var(--line);
+    border-radius:16px;
+    background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+    box-shadow:var(--shadow);
+    min-width:0;
+    max-width:0;
+    opacity:0;
+    transform:translateX(8px);
+    overflow:hidden;
+    pointer-events:none;
+    transition:max-width .28s ease, opacity .24s ease, transform .24s ease, padding .28s ease;
+    padding:0;
+  }
+  .leaveBlock.is-visible{
+    max-width:420px;
+    opacity:1;
+    transform:translateX(0);
+    padding:10px 14px;
+  }
+  .leaveLabel{
+    font-size:12px;
+    font-weight:900;
+    letter-spacing:.6px;
+    text-transform:uppercase;
+    color:var(--muted);
+    white-space:nowrap;
+  }
+  .leaveMain{
+    display:flex;
+    align-items:baseline;
+    gap:10px;
+    line-height:1;
+    margin-top:2px;
+    white-space:nowrap;
+  }
+  .leaveTarget,
+  .leaveDelta{
+    font-size:64px;
+    font-weight:800;
+    letter-spacing:.4px;
+  }
+  .leaveDelta{
+    color:var(--good);
+    transition:color .2s ease;
+  }
+  .leaveDelta.overdue{ color:var(--bad); }
+  .leaveDelta.tick{ animation:deltaTick .24s ease; }
   
   .netStatus{
     display:flex; align-items:center; gap:10px;
@@ -160,6 +197,7 @@
     padding:10px 14px;
     cursor:pointer;
     -webkit-tap-highlight-color: transparent;
+    align-self:center;
   }
   .editBtn:active{transform:scale(.99)}
   
@@ -172,6 +210,13 @@
   @media (min-width: 980px){
     .grid{ grid-template-columns: 1fr 1fr 1fr; }
     .clock{font-size:72px}
+    .leaveTarget, .leaveDelta{ font-size:72px; }
+  }
+  @media (max-width: 860px){
+    .topbar{ flex-direction:column; align-items:stretch; }
+    .topRight{ align-items:flex-start; }
+    .controlRow{ width:100%; justify-content:space-between; }
+    .leaveTarget, .leaveDelta{ font-size:40px; }
   }
   
   .card{
@@ -182,7 +227,10 @@
     box-shadow:var(--shadow);
     position:relative;
     overflow:hidden;
+    animation:fadeSlideIn .36s ease both;
   }
+  .card:nth-of-type(2){ animation-delay:.05s; }
+  .card:nth-of-type(3){ animation-delay:.1s; }
   
   .cardHead{
     display:flex;
@@ -221,6 +269,25 @@
     gap:10px;
     margin-top:8px;
   }
+  .skyLabel{
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  .wIcon{
+    width:26px;
+    height:26px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    color:var(--accent);
+  }
+  .wIcon svg{
+    width:26px;
+    height:26px;
+    display:block;
+  }
+
   .weatherVisual{
     position:relative;
     height:90px;
@@ -415,16 +482,11 @@
     padding:12px;
     background:rgba(0,0,0,.05);
   }
-  .goodLuckBanner{
-    margin-top:12px;
-    border:1px solid rgba(52,211,153,.55);
-    background:rgba(52,211,153,.14);
-    border-radius:14px;
-    text-align:center;
-    font-size:32px;
+  .kidWish{
+    margin-top:8px;
+    color:var(--good);
+    font-size:16px;
     font-weight:900;
-    letter-spacing:1px;
-    padding:12px;
   }
   
   .footer{
@@ -535,7 +597,7 @@
   }
   @media (min-width: 980px){
     .modalGrid{ grid-template-columns: 1fr 1fr; }
-    .dualGrid{ grid-template-columns: 1fr 1fr; }
+    .dualGrid{ grid-template-columns: 1.1fr 1fr 1fr; }
   }
   
   .panel{
@@ -627,6 +689,16 @@
     .pixel-wrap, .card:hover { animation:none; transition:none }
     .colon{ transition:none }
     .weatherVisual *{ animation:none !important; transition:none !important; }
+    .leaveBlock, .leaveDelta, .topbar, .card{ animation:none !important; transition:none !important; }
+  }
+
+  @keyframes fadeSlideIn{
+    from{ opacity:0; transform:translateY(8px); }
+    to{ opacity:1; transform:translateY(0); }
+  }
+  @keyframes deltaTick{
+    from{ opacity:.35; transform:translateY(-2px); }
+    to{ opacity:1; transform:translateY(0); }
   }
 
   @keyframes pulseSun{

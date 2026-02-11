@@ -27,10 +27,6 @@
           <span id="hh">--</span><span class="colon" id="colon">:</span><span id="mm">--</span>
         </div>
         <div class="date" id="dateLine">--</div>
-        <div class="exitClockRow">
-          <span class="exitPlan" id="exitPlanTime">Evden çıkış: 07:35</span>
-          <span class="exitCountdown" id="exitCountdown">Kalan: --:--</span>
-        </div>
       </div>
 
       <div class="topRight">
@@ -40,9 +36,19 @@
         </div>
         <div class="lastWeather" id="lastWeather">Hava: —</div>
 
-        <button class="editBtn" id="editBtn" type="button" title="Düzenle">
-          ✏️ Düzenle
-        </button>
+        <div class="controlRow">
+          <div class="leaveBlock" id="leaveBlock" aria-live="polite">
+            <div class="leaveLabel">Evden Çıkış</div>
+            <div class="leaveMain">
+              <span class="leaveTarget" id="leaveTargetTime">07:35</span>
+              <span class="leaveDelta" id="leaveDelta">-00:08</span>
+            </div>
+          </div>
+
+          <button class="editBtn" id="editBtn" type="button" title="Düzenle">
+            ✏️ Düzenle
+          </button>
+        </div>
       </div>
     </header>
 
@@ -55,7 +61,13 @@
         </div>
 
         <div class="kv">
-          <div class="row"><div class="k">Gökyüzü</div><div class="v" id="wSky">—</div></div>
+          <div class="row">
+            <div class="k skyLabel">
+              <span>Gökyüzü</span>
+              <span class="wIcon" id="wIcon" aria-hidden="true"></span>
+            </div>
+            <div class="v" id="wSky">—</div>
+          </div>
           <div class="row"><div class="k">Yağış</div><div class="v" id="wRain">—</div></div>
           <div class="row"><div class="k">Sıcaklık</div><div class="v" id="wTemp">—</div></div>
           <div class="row"><div class="k">Rüzgar</div><div class="v" id="wWind">—</div></div>
@@ -117,30 +129,27 @@
         <div class="dualGrid">
           <div class="stackCol">
             <div class="notes">
-              <h3>Rüzgar Notları</h3>
-              <div class="notesBox" id="ruzgarNotesBox" aria-label="Rüzgar notları"></div>
-            </div>
-            <div class="divider"></div>
-            <div class="exit">
-              <h3>Rüzgar Çıkış Kontrolleri</h3>
-              <ul class="checklist" id="ruzgarExitList" aria-label="Rüzgar çıkış kontrol listesi"></ul>
+              <h3>Notlar</h3>
+              <div class="notesBox" id="notesBox" aria-label="Kalıcı notlar"></div>
             </div>
           </div>
 
           <div class="stackCol">
-            <div class="notes">
-              <h3>Bulut Notları</h3>
-              <div class="notesBox" id="bulutNotesBox" aria-label="Bulut notları"></div>
-            </div>
-            <div class="divider"></div>
             <div class="exit">
-              <h3>Bulut Çıkış Kontrolleri</h3>
+              <h3>Rüzgar</h3>
+              <ul class="checklist" id="ruzgarExitList" aria-label="Rüzgar çıkış kontrol listesi"></ul>
+              <div class="kidWish" id="ruzgarWish" hidden>İyi dersler</div>
+            </div>
+          </div>
+
+          <div class="stackCol">
+            <div class="exit">
+              <h3>Bulut</h3>
               <ul class="checklist" id="bulutExitList" aria-label="Bulut çıkış kontrol listesi"></ul>
+              <div class="kidWish" id="bulutWish" hidden>İyi dersler</div>
             </div>
           </div>
         </div>
-
-        <div class="goodLuckBanner" id="goodLuckBanner" hidden>IYI DERSLER</div>
       </section>
     </main>
 
@@ -182,11 +191,30 @@
               <input id="pixelShiftToggle" type="checkbox" />
               <span>Pixel shift (ekran yanması riskini azalt)</span>
             </label>
+          </section>
+
+          <section class="panel">
+            <h3>Evden Çıkış Ayarları</h3>
 
             <label class="field">
               <span>Evden Çıkış Saati</span>
               <input id="departureTimeInput" type="text" inputmode="numeric" placeholder="07:35" />
               <small class="muted">Saati buradan değiştir. Örn: 07:35</small>
+            </label>
+
+            <label class="field">
+              <span>Öncesi (dakika)</span>
+              <input id="beforeMinutesInput" type="number" inputmode="numeric" min="0" max="240" placeholder="10" />
+            </label>
+
+            <label class="field">
+              <span>Sonrası (dakika)</span>
+              <input id="afterMinutesInput" type="number" inputmode="numeric" min="0" max="240" placeholder="10" />
+            </label>
+
+            <label class="field inline">
+              <input id="enableLateModeToggle" type="checkbox" />
+              <span>Geç kalma modu (kırmızı tema)</span>
             </label>
           </section>
 
@@ -218,15 +246,9 @@
 
           <!-- Notes + checklists editor -->
           <section class="panel">
-            <h3>Rüzgar Notları</h3>
+            <h3>Notlar</h3>
             <label class="field">
-              <textarea id="ruzgarNotesInput" rows="4" placeholder="Rüzgar notları..."></textarea>
-            </label>
-
-            <div class="divider soft"></div>
-            <h3>Bulut Notları</h3>
-            <label class="field">
-              <textarea id="bulutNotesInput" rows="4" placeholder="Bulut notları..."></textarea>
+              <textarea id="notesInput" rows="6" placeholder="Kalıcı notlar..."></textarea>
             </label>
 
             <div class="divider soft"></div>

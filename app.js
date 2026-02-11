@@ -66,6 +66,15 @@ const PIXEL_SHIFT_MS = 2 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 8000;
 const DEFAULT_DEPARTURE_TIME = "07:35";
 const CHECK_GROUPS = ["ruzgar", "bulut"];
+const DEFAULT_KID_ITEMS = [
+  "Cüzdan",
+  "Anahtar",
+  "Telefon",
+  "Bilgisayar",
+  "Kulaklık",
+  "Şarj Aleti",
+  "Cüzdan/Kartlar"
+];
 
 let importStaged = null; // geçici import buffer
 
@@ -155,32 +164,24 @@ function defaultState(){
       weatherEndpoint: WEATHER_ENDPOINT,
       autoClearDoneAtNight: true,
       theme: "dark",
-      pixelShift: false,
-      departureTime: DEFAULT_DEPARTURE_TIME
+      pixelShift: false
     },
+    leaveTimeSettings: {
+      leaveTime: DEFAULT_DEPARTURE_TIME,
+      beforeMinutes: 10,
+      afterMinutes: 10,
+      enableLateMode: true
+    },
+    persistentNotes: "",
+    ruzgarChecklist: buildDefaultKidChecklist(),
+    bulutChecklist: buildDefaultKidChecklist(),
     today: {
       date: tISO,
       schedule: [
         { id: uid(), time: "09:30", text: "Okul", done: false },
         { id: uid(), time: "18:00", text: "Market", done: false },
         { id: uid(), time: "", text: "Kargoyu kontrol et", done: false },
-      ],
-      notes: {
-        ruzgar: "• Kapüşonlu montu hazırla\n• Su almayı unutma",
-        bulut: "• Gün içinde serinleyebilir\n• Çantada ince hırka bulunsun"
-      },
-      checklists: {
-        ruzgar: [
-          { id: uid(), text: "Anahtar", done: false },
-          { id: uid(), text: "Cüzdan", done: false },
-          { id: uid(), text: "Telefon", done: false }
-        ],
-        bulut: [
-          { id: uid(), text: "Kart", done: false },
-          { id: uid(), text: "Şarj", done: false },
-          { id: uid(), text: "Kulaklık", done: false }
-        ]
-      }
+      ]
     },
     tomorrow: {
       date: shiftISO(tISO, 1),
@@ -194,6 +195,10 @@ function defaultState(){
       payload: null // normalized
     }
   };
+}
+
+function buildDefaultKidChecklist(){
+  return DEFAULT_KID_ITEMS.map((text) => ({ id: uid(), text, done: false }));
 }
 
 function shiftISO(iso, days){
@@ -215,8 +220,8 @@ function loadState(){
   // Şema toleransı: eksikleri tamamla
   const base = defaultState();
   const merged = mergeDeep(base, parsed);
-  normalizeTodayData(merged);
-  merged.settings.departureTime = normalizeDepartureTime(merged.settings.departureTime || DEFAULT_DEPARTURE_TIME);
+  migrateStateSchema(merged, parsed);
+  normalizeState(merged);
   // Endpoint ayrıca spec'teki keyde de tutulmalı
   try {
     if (merged?.settings?.weatherEndpoint) {
@@ -227,30 +232,85 @@ function loadState(){
   return merged;
 }
 
-function normalizeTodayData(s){
-  if (!s || !s.today) return;
-  const legacyChecklist = Array.isArray(s.today.checklist) ? s.today.checklist : [];
-  if (!s.today.notes || typeof s.today.notes !== "object"){
-    const text = (typeof s.today.notes === "string") ? s.today.notes : "";
-    s.today.notes = { ruzgar: text, bulut: "" };
-  } else {
-    s.today.notes.ruzgar = String(s.today.notes.ruzgar ?? "");
-    s.today.notes.bulut = String(s.today.notes.bulut ?? "");
+function migrateStateSchema(target, source){
+  if (!target || !source || typeof source !== "object") return;
+
+  // departureTime eski settings'ten yeni root.leaveTimeSettings'e taşınır
+  if (source?.settings?.departureTime && !source?.leaveTimeSettings?.leaveTime){
+    target.leaveTimeSettings.leaveTime = source.settings.departureTime;
   }
 
-  if (!s.today.checklists || typeof s.today.checklists !== "object"){
-    s.today.checklists = { ruzgar: legacyChecklist, bulut: [] };
+  // eski today.notes -> persistentNotes
+  if (typeof source?.today?.notes === "string" && !source?.persistentNotes){
+    target.persistentNotes = source.today.notes;
+  } else if (source?.today?.notes && typeof source.today.notes === "object" && !source?.persistentNotes){
+    target.persistentNotes = [source.today.notes.ruzgar, source.today.notes.bulut].filter(Boolean).join("\n");
   }
-  for (const group of CHECK_GROUPS){
-    if (!Array.isArray(s.today.checklists[group])) s.today.checklists[group] = [];
+
+  // eski checklist alanlarından root checklists'e taşı
+  const legacyChecklist = Array.isArray(source?.today?.checklist) ? source.today.checklist : [];
+  const legacyGrouped = source?.today?.checklists;
+  const incomingRuzgar = Array.isArray(source?.ruzgarChecklist)
+    ? source.ruzgarChecklist
+    : Array.isArray(legacyGrouped?.ruzgar)
+      ? legacyGrouped.ruzgar
+      : legacyChecklist;
+  const incomingBulut = Array.isArray(source?.bulutChecklist)
+    ? source.bulutChecklist
+    : Array.isArray(legacyGrouped?.bulut)
+      ? legacyGrouped.bulut
+      : [];
+
+  if (incomingRuzgar.length) target.ruzgarChecklist = incomingRuzgar;
+  if (incomingBulut.length) target.bulutChecklist = incomingBulut;
+}
+
+function normalizeState(s){
+  if (!s || typeof s !== "object") return;
+  if (!s.settings || typeof s.settings !== "object") s.settings = {};
+  if (!s.today || typeof s.today !== "object") s.today = { date: todayISO(new Date()), schedule: [] };
+  if (!s.tomorrow || typeof s.tomorrow !== "object") s.tomorrow = { date: shiftISO(todayISO(new Date()), 1), schedule: [] };
+  if (!s.weatherCache || typeof s.weatherCache !== "object") s.weatherCache = { fetchedAt: 0, payload: null };
+
+  if (typeof s.settings.weatherEndpoint !== "string") s.settings.weatherEndpoint = WEATHER_ENDPOINT;
+  if (typeof s.settings.theme !== "string") s.settings.theme = "dark";
+  s.settings.theme = (s.settings.theme === "light") ? "light" : "dark";
+  s.settings.autoClearDoneAtNight = s.settings.autoClearDoneAtNight !== false;
+  s.settings.pixelShift = !!s.settings.pixelShift;
+  if (typeof s.today.date !== "string") s.today.date = todayISO(new Date());
+  if (typeof s.tomorrow.date !== "string") s.tomorrow.date = shiftISO(s.today.date, 1);
+  if (!Array.isArray(s.today.schedule)) s.today.schedule = [];
+  if (!Array.isArray(s.tomorrow.schedule)) s.tomorrow.schedule = [];
+
+  if (!s.leaveTimeSettings || typeof s.leaveTimeSettings !== "object"){
+    s.leaveTimeSettings = { leaveTime: DEFAULT_DEPARTURE_TIME, beforeMinutes: 10, afterMinutes: 10, enableLateMode: true };
   }
-  if (
-    legacyChecklist.length > 0 &&
-    s.today.checklists.ruzgar.length === 0 &&
-    s.today.checklists.bulut.length === 0
-  ){
-    s.today.checklists.ruzgar = legacyChecklist;
+  s.leaveTimeSettings.leaveTime = normalizeDepartureTime(s.leaveTimeSettings.leaveTime || DEFAULT_DEPARTURE_TIME);
+  s.leaveTimeSettings.beforeMinutes = clamp(Number(s.leaveTimeSettings.beforeMinutes) || 10, 0, 240);
+  s.leaveTimeSettings.afterMinutes = clamp(Number(s.leaveTimeSettings.afterMinutes) || 10, 0, 240);
+  s.leaveTimeSettings.enableLateMode = s.leaveTimeSettings.enableLateMode !== false;
+
+  s.persistentNotes = String(s.persistentNotes ?? "");
+
+  if (!Array.isArray(s.ruzgarChecklist)){
+    s.ruzgarChecklist = buildDefaultKidChecklist();
   }
+  if (!Array.isArray(s.bulutChecklist)){
+    s.bulutChecklist = buildDefaultKidChecklist();
+  }
+
+  const normalizeItems = (arr, allowTime) => {
+    for (const it of arr){
+      if (!it.id) it.id = uid();
+      if (it.done == null) it.done = false;
+      it.text = String(it.text ?? "");
+      if (allowTime) it.time = String(it.time ?? "");
+    }
+  };
+  normalizeItems(s.today.schedule, true);
+  normalizeItems(s.tomorrow.schedule, true);
+  normalizeItems(s.ruzgarChecklist, false);
+  normalizeItems(s.bulutChecklist, false);
 }
 
 function saveState(state){
@@ -284,8 +344,9 @@ const hhEl = $("#hh");
 const mmEl = $("#mm");
 const colonEl = $("#colon");
 const dateLineEl = $("#dateLine");
-const exitPlanTimeEl = $("#exitPlanTime");
-const exitCountdownEl = $("#exitCountdown");
+const leaveBlockEl = $("#leaveBlock");
+const leaveTargetTimeEl = $("#leaveTargetTime");
+const leaveDeltaEl = $("#leaveDelta");
 
 const netDot = $("#netDot");
 const netText = $("#netText");
@@ -298,14 +359,15 @@ const wWind = $("#wWind");
 const wTips = $("#wTips");
 const wHint = $("#wHint");
 const weatherVisual = $("#weatherVisual");
+const wIcon = $("#wIcon");
 
 const todayList = $("#todayList");
 const tomorrowList = $("#tomorrowList");
-const ruzgarNotesBox = $("#ruzgarNotesBox");
-const bulutNotesBox = $("#bulutNotesBox");
+const notesBox = $("#notesBox");
 const ruzgarExitList = $("#ruzgarExitList");
 const bulutExitList = $("#bulutExitList");
-const goodLuckBanner = $("#goodLuckBanner");
+const ruzgarWish = $("#ruzgarWish");
+const bulutWish = $("#bulutWish");
 
 const editBtn = $("#editBtn");
 const modalBackdrop = $("#modalBackdrop");
@@ -316,6 +378,9 @@ const saveBtn = $("#saveBtn");
 const endpointInput = $("#endpointInput");
 const pixelShiftToggle = $("#pixelShiftToggle");
 const departureTimeInput = $("#departureTimeInput");
+const beforeMinutesInput = $("#beforeMinutesInput");
+const afterMinutesInput = $("#afterMinutesInput");
+const enableLateModeToggle = $("#enableLateModeToggle");
 
 const todayTimeInput = $("#todayTimeInput");
 const todayTextInput = $("#todayTextInput");
@@ -327,8 +392,7 @@ const tomTextInput = $("#tomTextInput");
 const addTomBtn = $("#addTomBtn");
 const editTomList = $("#editTomList");
 
-const ruzgarNotesInput = $("#ruzgarNotesInput");
-const bulutNotesInput = $("#bulutNotesInput");
+const notesInput = $("#notesInput");
 const newRuzgarCheckItemInput = $("#newRuzgarCheckItemInput");
 const addRuzgarCheckItemBtn = $("#addRuzgarCheckItemBtn");
 const editRuzgarExitList = $("#editRuzgarExitList");
@@ -361,49 +425,56 @@ function renderClock(){
   hhEl.textContent = pad2(d.getHours());
   mmEl.textContent = pad2(d.getMinutes());
   dateLineEl.textContent = fmtTurkishDateLine(d);
-  renderDepartureCountdown(d);
+  renderLeaveStatus(d);
 
   // çok hafif "tick": colon opacity
   const sec = d.getSeconds();
   colonEl.style.opacity = (sec % 2 === 0) ? "0.55" : "0.95";
 }
 
-function parseDepartureTarget(now = new Date()){
-  const raw = normalizeDepartureTime(state?.settings?.departureTime || DEFAULT_DEPARTURE_TIME);
+function parseLeaveTarget(now = new Date()){
+  const raw = normalizeDepartureTime(state?.leaveTimeSettings?.leaveTime || DEFAULT_DEPARTURE_TIME);
   const [h, m] = raw.split(":").map(Number);
   const target = new Date(now);
   target.setHours(Number.isFinite(h) ? h : 7, Number.isFinite(m) ? m : 35, 0, 0);
   return { raw, target };
 }
 
-function formatMinSec(totalSec){
-  const safe = Math.max(0, Math.floor(totalSec));
+function formatSignedMinSec(totalSec){
+  const sign = totalSec >= 0 ? "+" : "-";
+  const safe = Math.abs(Math.floor(totalSec));
   const mm = Math.floor(safe / 60);
   const ss = safe % 60;
-  return `${pad2(mm)}:${pad2(ss)}`;
+  return `${sign}${pad2(mm)}:${pad2(ss)}`;
 }
 
-function renderDepartureCountdown(now = new Date()){
-  const { raw, target } = parseDepartureTarget(now);
-  exitPlanTimeEl.textContent = `Evden çıkış: ${raw}`;
+function renderLeaveStatus(now = new Date()){
+  const { raw, target } = parseLeaveTarget(now);
+  const beforeMin = Number(state?.leaveTimeSettings?.beforeMinutes ?? 10);
+  const afterMin = Number(state?.leaveTimeSettings?.afterMinutes ?? 10);
+  const diffSec = Math.floor((now.getTime() - target.getTime()) / 1000); // + ise gecikme
+  const beforeSec = beforeMin * 60;
+  const afterSec = afterMin * 60;
+  const withinWindow = diffSec >= -beforeSec && diffSec <= afterSec;
 
-  const diffSec = Math.floor((target.getTime() - now.getTime()) / 1000);
-  exitCountdownEl.classList.remove("overdue", "frozen");
+  leaveTargetTimeEl.textContent = raw;
+  leaveBlockEl.classList.toggle("is-visible", withinWindow);
 
-  if (diffSec >= 0){
-    exitCountdownEl.textContent = `Kalan: ${formatMinSec(diffSec)}`;
-    return;
+  const deltaText = formatSignedMinSec(diffSec);
+  if (leaveDeltaEl.textContent !== deltaText){
+    leaveDeltaEl.textContent = deltaText;
+    leaveDeltaEl.classList.remove("tick");
+    void leaveDeltaEl.offsetWidth;
+    leaveDeltaEl.classList.add("tick");
   }
+  leaveDeltaEl.classList.toggle("overdue", diffSec > 0);
+  renderLateMode(now, target);
+}
 
-  const overdueSec = Math.abs(diffSec);
-  if (overdueSec <= 600){
-    exitCountdownEl.classList.add("overdue");
-    exitCountdownEl.textContent = `Gecikme: +${formatMinSec(overdueSec)}`;
-    return;
-  }
-
-  exitCountdownEl.classList.add("overdue", "frozen");
-  exitCountdownEl.textContent = "Gecikme: +10:00";
+function renderLateMode(now, target){
+  const enableLateMode = !!state?.leaveTimeSettings?.enableLateMode;
+  const isLate = now.getTime() > target.getTime();
+  document.body.classList.toggle("late-mode", enableLateMode && isLate);
 }
 
 function renderNet(){
@@ -523,6 +594,7 @@ function setWeatherUI(normalized, hintText){
     wTips.innerHTML = `<li class="muted">Hava verisi yok.</li>`;
     wHint.textContent = hintText || "";
     setWeatherVisual(null);
+    setWeatherIcon(null);
     return;
   }
 
@@ -547,6 +619,40 @@ function setWeatherUI(normalized, hintText){
 
   wHint.textContent = hintText || "";
   setWeatherVisual(normalized);
+  setWeatherIcon(normalized);
+}
+
+function setWeatherIcon(normalized){
+  if (!wIcon) return;
+  const svg = pickWeatherIconSvg(normalized);
+  wIcon.innerHTML = svg;
+}
+
+function pickWeatherIconSvg(normalized){
+  if (!normalized) return iconCloudy();
+  const sky = (normalized.skyLabel || "").toLowerCase();
+  const rain = (normalized.rainLabel || "").toLowerCase();
+  if (sky.includes("gök gürültülü")) return iconStorm();
+  if (rain.includes("var")) return iconRain();
+  if (sky.includes("az bulutlu") || sky.includes("parçalı")) return iconPartlyCloudy();
+  if (sky.includes("güneşli")) return iconSunny();
+  return iconCloudy();
+}
+
+function iconSunny(){
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.2" fill="currentColor" stroke="none"></circle><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"/></svg>`;
+}
+function iconPartlyCloudy(){
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="9" r="3.5" fill="currentColor" stroke="none"></circle><path d="M8 17h9a3 3 0 0 0 .1-6 4.5 4.5 0 0 0-8.8-1.2A3.3 3.3 0 0 0 8 17Z" fill="currentColor" stroke="none"/></svg>`;
+}
+function iconCloudy(){
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 17h11.2a3.2 3.2 0 0 0 .1-6.3 4.9 4.9 0 0 0-9.5-1.4A3.7 3.7 0 0 0 6 17Z" fill="currentColor" stroke="none"/></svg>`;
+}
+function iconRain(){
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 13h11a3 3 0 0 0 .1-6 4.5 4.5 0 0 0-8.8-1.1A3.4 3.4 0 0 0 6 13Z" fill="currentColor" stroke="none"/><path d="m8 15-1 3m5-3-1 3m5-3-1 3"/></svg>`;
+}
+function iconStorm(){
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 12h11a3 3 0 0 0 .1-6 4.5 4.5 0 0 0-8.8-1.1A3.4 3.4 0 0 0 6 12Z" fill="currentColor" stroke="none"/><path d="m11 13-2.2 4.2h2.5L10 21l4.2-5h-2.6l1.4-3Z"/></svg>`;
 }
 
 function setWeatherVisual(normalized){
@@ -816,19 +922,10 @@ function maybeRollover(){
 
   // Eğer gün değiştiyse: today -> archive mantığı yok; sadece date'leri güncelle
   if (state.today.date !== tISO){
-    normalizeTodayData(state);
     // "tomorrow"u bugüne taşı
     const newToday = {
       date: tISO,
-      schedule: (state.tomorrow?.schedule || []).map(x => ({...x, done:false})),
-      notes: {
-        ruzgar: state.today.notes?.ruzgar || "",
-        bulut: state.today.notes?.bulut || ""
-      },
-      checklists: {
-        ruzgar: (state.today.checklists?.ruzgar || []).map(x => ({...x, done:false})),
-        bulut: (state.today.checklists?.bulut || []).map(x => ({...x, done:false}))
-      }
+      schedule: (state.tomorrow?.schedule || []).map(x => ({...x, done:false}))
     };
 
     // yeni yarın
@@ -860,7 +957,7 @@ function clearDoneInToday(){
 
 // ---------- UI render ----------
 function renderAll(){
-  normalizeTodayData(state);
+  normalizeState(state);
   applyTheme();
   renderClock();
   renderNet();
@@ -872,16 +969,15 @@ function renderAll(){
 
   renderMiniList(tomorrowList, state.tomorrow.schedule);
 
-  ruzgarNotesBox.textContent = state.today.notes?.ruzgar || "—";
-  bulutNotesBox.textContent = state.today.notes?.bulut || "—";
+  notesBox.textContent = state.persistentNotes || "—";
 
-  renderChecklist(ruzgarExitList, state.today.checklists?.ruzgar, (id) => {
+  renderChecklist(ruzgarExitList, state.ruzgarChecklist, (id) => {
     toggleExitDone("ruzgar", id);
   });
-  renderChecklist(bulutExitList, state.today.checklists?.bulut, (id) => {
+  renderChecklist(bulutExitList, state.bulutChecklist, (id) => {
     toggleExitDone("bulut", id);
   });
-  renderGoodLuckBanner();
+  renderKidWishes();
 
   autoClearToggle.checked = !!state.settings.autoClearDoneAtNight;
   pixelShiftToggle.checked = !!state.settings.pixelShift;
@@ -898,8 +994,8 @@ function toggleTodayDone(id){
 }
 
 function toggleExitDone(group, id){
-  normalizeTodayData(state);
-  const list = state.today.checklists?.[group] || [];
+  normalizeState(state);
+  const list = group === "ruzgar" ? state.ruzgarChecklist : state.bulutChecklist;
   const it = list.find(x => x.id === id);
   if (!it) return;
   it.done = !it.done;
@@ -907,13 +1003,11 @@ function toggleExitDone(group, id){
   renderAll();
 }
 
-function renderGoodLuckBanner(){
-  const allItems = [
-    ...(state.today.checklists?.ruzgar || []),
-    ...(state.today.checklists?.bulut || [])
-  ];
-  const doneAll = allItems.length > 0 && allItems.every((it) => !!it.done);
-  goodLuckBanner.hidden = !doneAll;
+function renderKidWishes(){
+  const ruzgarDone = (state.ruzgarChecklist || []).length > 0 && state.ruzgarChecklist.every((it) => !!it.done);
+  const bulutDone = (state.bulutChecklist || []).length > 0 && state.bulutChecklist.every((it) => !!it.done);
+  ruzgarWish.hidden = !(ruzgarDone || bulutDone);
+  bulutWish.hidden = !bulutDone;
 }
 
 // ---------- Theme / Pixel shift ----------
@@ -968,11 +1062,13 @@ function setModalOpen(nextOpen){
 }
 
 function openModal(){
-  normalizeTodayData(state);
+  normalizeState(state);
   endpointInput.value = state.settings.weatherEndpoint || "";
-  departureTimeInput.value = state.settings.departureTime || DEFAULT_DEPARTURE_TIME;
-  ruzgarNotesInput.value = state.today.notes?.ruzgar || "";
-  bulutNotesInput.value = state.today.notes?.bulut || "";
+  notesInput.value = state.persistentNotes || "";
+  departureTimeInput.value = state.leaveTimeSettings.leaveTime || DEFAULT_DEPARTURE_TIME;
+  beforeMinutesInput.value = String(state.leaveTimeSettings.beforeMinutes ?? 10);
+  afterMinutesInput.value = String(state.leaveTimeSettings.afterMinutes ?? 10);
+  enableLateModeToggle.checked = !!state.leaveTimeSettings.enableLateMode;
   pixelShiftToggle.checked = !!state.settings.pixelShift;
 
   renderEditLists();
@@ -992,7 +1088,7 @@ function closeModal(){
 }
 
 function renderEditLists(){
-  normalizeTodayData(state);
+  normalizeState(state);
   // Today editor list
   editTodayList.innerHTML = "";
   for (const it of (state.today.schedule || []).slice(0, 20)){
@@ -1007,11 +1103,11 @@ function renderEditLists(){
 
   // Exit checklist editors
   editRuzgarExitList.innerHTML = "";
-  for (const it of (state.today.checklists?.ruzgar || []).slice(0, 30)){
+  for (const it of (state.ruzgarChecklist || []).slice(0, 40)){
     editRuzgarExitList.appendChild(makeEditRow(it, "exit-ruzgar"));
   }
   editBulutExitList.innerHTML = "";
-  for (const it of (state.today.checklists?.bulut || []).slice(0, 30)){
+  for (const it of (state.bulutChecklist || []).slice(0, 40)){
     editBulutExitList.appendChild(makeEditRow(it, "exit-bulut"));
   }
 }
@@ -1047,9 +1143,9 @@ function makeEditRow(item, kind){
     } else if (kind === "tomorrow"){
       state.tomorrow.schedule = (state.tomorrow.schedule || []).filter(x => x.id !== item.id);
     } else if (kind === "exit-ruzgar"){
-      state.today.checklists.ruzgar = (state.today.checklists.ruzgar || []).filter(x => x.id !== item.id);
+      state.ruzgarChecklist = (state.ruzgarChecklist || []).filter(x => x.id !== item.id);
     } else {
-      state.today.checklists.bulut = (state.today.checklists.bulut || []).filter(x => x.id !== item.id);
+      state.bulutChecklist = (state.bulutChecklist || []).filter(x => x.id !== item.id);
     }
     saveState(state);
     renderEditLists();
@@ -1106,8 +1202,9 @@ function addExitItem(group){
   const text = (input.value || "").trim();
   if (!text) return;
 
-  normalizeTodayData(state);
-  state.today.checklists[group].push({ id: uid(), text, done:false });
+  normalizeState(state);
+  const list = isRuzgar ? state.ruzgarChecklist : state.bulutChecklist;
+  list.push({ id: uid(), text, done:false });
 
   input.value = "";
   saveState(state);
@@ -1140,15 +1237,17 @@ function normalizeDepartureTime(v){
 }
 
 function saveFromModal(){
-  normalizeTodayData(state);
+  normalizeState(state);
   const endpoint = (endpointInput.value || "").trim();
   state.settings.weatherEndpoint = endpoint;
   writeStorage(ENDPOINT_STORAGE_KEY, endpoint);
 
   state.settings.pixelShift = !!pixelShiftToggle.checked;
-  state.settings.departureTime = normalizeDepartureTime(departureTimeInput.value);
-  state.today.notes.ruzgar = ruzgarNotesInput.value || "";
-  state.today.notes.bulut = bulutNotesInput.value || "";
+  state.persistentNotes = notesInput.value || "";
+  state.leaveTimeSettings.leaveTime = normalizeDepartureTime(departureTimeInput.value);
+  state.leaveTimeSettings.beforeMinutes = clamp(Number(beforeMinutesInput.value) || 10, 0, 240);
+  state.leaveTimeSettings.afterMinutes = clamp(Number(afterMinutesInput.value) || 10, 0, 240);
+  state.leaveTimeSettings.enableLateMode = !!enableLateModeToggle.checked;
 
   saveState(state);
   renderAll();
@@ -1170,14 +1269,8 @@ function validateImported(obj){
   if (!obj || typeof obj !== "object") return { ok:false, msg:"JSON nesnesi değil." };
   if (!obj.settings || !obj.today || !obj.tomorrow) return { ok:false, msg:"Zorunlu alanlar eksik (settings/today/tomorrow)." };
   if (typeof obj.today.date !== "string") return { ok:false, msg:"today.date geçersiz." };
-  const hasLegacyChecklist = Array.isArray(obj?.today?.checklist);
-  const hasGroupedChecklist =
-    obj?.today?.checklists &&
-    typeof obj.today.checklists === "object" &&
-    Array.isArray(obj.today.checklists.ruzgar) &&
-    Array.isArray(obj.today.checklists.bulut);
-  if (!Array.isArray(obj.today.schedule) || (!hasLegacyChecklist && !hasGroupedChecklist)){
-    return { ok:false, msg:"today.schedule ve checklist/checklists alanlari gecersiz." };
+  if (!Array.isArray(obj.today.schedule)){
+    return { ok:false, msg:"today.schedule alani gecersiz." };
   }
   return { ok:true, msg:"OK" };
 }
@@ -1212,16 +1305,18 @@ function doImport(mode){
 
   if (mode === "overwrite"){
     state = importStaged;
+    migrateStateSchema(state, importStaged);
   } else if (mode === "merge"){
     // defaultState + currentState + importStaged (import kazanır)
     const base = defaultState();
     const cur = loadState();
     state = mergeDeep(mergeDeep(base, cur), importStaged);
+    migrateStateSchema(state, importStaged);
   }
 
   // ids olmayan elemanlara id ver
   ensureIds(state);
-  state.settings.departureTime = normalizeDepartureTime(state?.settings?.departureTime || DEFAULT_DEPARTURE_TIME);
+  normalizeState(state);
 
   saveState(state);
 
@@ -1241,20 +1336,7 @@ function doImport(mode){
 }
 
 function ensureIds(s){
-  normalizeTodayData(s);
-  const fixArr = (arr) => {
-    if (!Array.isArray(arr)) return;
-    for (const it of arr){
-      if (!it.id) it.id = uid();
-      if (it.done == null) it.done = false;
-      if (typeof it.text !== "string") it.text = String(it.text ?? "");
-      if (typeof it.time !== "string") it.time = String(it.time ?? "");
-    }
-  };
-  fixArr(s?.today?.schedule);
-  fixArr(s?.tomorrow?.schedule);
-  fixArr(s?.today?.checklists?.ruzgar);
-  fixArr(s?.today?.checklists?.bulut);
+  normalizeState(s);
 }
 
 // ---------- Buttons ----------
@@ -1299,9 +1381,9 @@ autoClearToggle.addEventListener("change", () => {
 });
 
 resetChecklistBtn.addEventListener("click", () => {
-  normalizeTodayData(state);
-  for (const it of (state.today.checklists?.ruzgar || [])) it.done = false;
-  for (const it of (state.today.checklists?.bulut || [])) it.done = false;
+  normalizeState(state);
+  for (const it of (state.ruzgarChecklist || [])) it.done = false;
+  for (const it of (state.bulutChecklist || [])) it.done = false;
   saveState(state);
   renderAll();
 });
