@@ -300,17 +300,31 @@ function normalizeState(s){
   }
 
   const normalizeItems = (arr, allowTime) => {
-    for (const it of arr){
-      if (!it.id) it.id = uid();
-      if (it.done == null) it.done = false;
-      it.text = String(it.text ?? "");
-      if (allowTime) it.time = String(it.time ?? "");
+    const out = [];
+    for (const raw of arr){
+      if (raw && typeof raw === "object" && !Array.isArray(raw)){
+        const it = raw;
+        out.push({
+          id: it.id ? String(it.id) : uid(),
+          text: String(it.text ?? ""),
+          done: !!it.done,
+          ...(allowTime ? { time: String(it.time ?? "") } : {})
+        });
+      } else if (typeof raw === "string"){
+        out.push({
+          id: uid(),
+          text: raw,
+          done: false,
+          ...(allowTime ? { time: "" } : {})
+        });
+      }
     }
+    return out;
   };
-  normalizeItems(s.today.schedule, true);
-  normalizeItems(s.tomorrow.schedule, true);
-  normalizeItems(s.ruzgarChecklist, false);
-  normalizeItems(s.bulutChecklist, false);
+  s.today.schedule = normalizeItems(s.today.schedule, true);
+  s.tomorrow.schedule = normalizeItems(s.tomorrow.schedule, true);
+  s.ruzgarChecklist = normalizeItems(s.ruzgarChecklist, false);
+  s.bulutChecklist = normalizeItems(s.bulutChecklist, false);
 }
 
 function saveState(state){
@@ -449,6 +463,10 @@ function formatSignedMinSec(totalSec){
 }
 
 function renderLeaveStatus(now = new Date()){
+  if (!leaveBlockEl || !leaveTargetTimeEl || !leaveDeltaEl){
+    // Eski cache ile gelen HTML sürümü durumunda sayaç renderını güvenli şekilde atla.
+    return;
+  }
   const { raw, target } = parseLeaveTarget(now);
   const beforeMin = Number(state?.leaveTimeSettings?.beforeMinutes ?? 10);
   const afterMin = Number(state?.leaveTimeSettings?.afterMinutes ?? 10);
@@ -969,14 +987,18 @@ function renderAll(){
 
   renderMiniList(tomorrowList, state.tomorrow.schedule);
 
-  notesBox.textContent = state.persistentNotes || "—";
+  if (notesBox) notesBox.textContent = state.persistentNotes || "—";
 
-  renderChecklist(ruzgarExitList, state.ruzgarChecklist, (id) => {
-    toggleExitDone("ruzgar", id);
-  });
-  renderChecklist(bulutExitList, state.bulutChecklist, (id) => {
-    toggleExitDone("bulut", id);
-  });
+  if (ruzgarExitList){
+    renderChecklist(ruzgarExitList, state.ruzgarChecklist, (id) => {
+      toggleExitDone("ruzgar", id);
+    });
+  }
+  if (bulutExitList){
+    renderChecklist(bulutExitList, state.bulutChecklist, (id) => {
+      toggleExitDone("bulut", id);
+    });
+  }
   renderKidWishes();
 
   autoClearToggle.checked = !!state.settings.autoClearDoneAtNight;
@@ -1004,6 +1026,7 @@ function toggleExitDone(group, id){
 }
 
 function renderKidWishes(){
+  if (!ruzgarWish || !bulutWish) return;
   const ruzgarDone = (state.ruzgarChecklist || []).length > 0 && state.ruzgarChecklist.every((it) => !!it.done);
   const bulutDone = (state.bulutChecklist || []).length > 0 && state.bulutChecklist.every((it) => !!it.done);
   ruzgarWish.hidden = !(ruzgarDone || bulutDone);
@@ -1062,6 +1085,10 @@ function setModalOpen(nextOpen){
 }
 
 function openModal(){
+  if (!modalBackdrop || !endpointInput || !notesInput || !departureTimeInput){
+    console.warn("Modal elements missing; likely stale cached HTML.");
+    return;
+  }
   normalizeState(state);
   endpointInput.value = state.settings.weatherEndpoint || "";
   notesInput.value = state.persistentNotes || "";
@@ -1080,6 +1107,7 @@ function openModal(){
 }
 
 function closeModal(){
+  if (!modalBackdrop) return;
   modalBackdrop.hidden = true;
   setModalOpen(false);
   importActions.hidden = true;
@@ -1088,6 +1116,7 @@ function closeModal(){
 }
 
 function renderEditLists(){
+  if (!editTodayList || !editTomList || !editRuzgarExitList || !editBulutExitList) return;
   normalizeState(state);
   // Today editor list
   editTodayList.innerHTML = "";
@@ -1237,6 +1266,7 @@ function normalizeDepartureTime(v){
 }
 
 function saveFromModal(){
+  if (!endpointInput || !notesInput || !departureTimeInput) return;
   normalizeState(state);
   const endpoint = (endpointInput.value || "").trim();
   state.settings.weatherEndpoint = endpoint;
@@ -1340,47 +1370,52 @@ function ensureIds(s){
 }
 
 // ---------- Buttons ----------
-editBtn.addEventListener("click", openModal);
-closeModalBtn.addEventListener("click", closeModal);
-cancelBtn.addEventListener("click", closeModal);
-saveBtn.addEventListener("click", saveFromModal);
-modalBackdrop.addEventListener("click", (e) => {
+function on(el, event, handler){
+  if (!el) return;
+  el.addEventListener(event, handler);
+}
+
+on(editBtn, "click", openModal);
+on(closeModalBtn, "click", closeModal);
+on(cancelBtn, "click", closeModal);
+on(saveBtn, "click", saveFromModal);
+on(modalBackdrop, "click", (e) => {
   if (e.target === modalBackdrop){
     closeModal();
   }
 });
 
-addTodayBtn.addEventListener("click", addTodayItem);
-addTomBtn.addEventListener("click", addTomorrowItem);
-addRuzgarCheckItemBtn.addEventListener("click", () => addExitItem("ruzgar"));
-addBulutCheckItemBtn.addEventListener("click", () => addExitItem("bulut"));
+on(addTodayBtn, "click", addTodayItem);
+on(addTomBtn, "click", addTomorrowItem);
+on(addRuzgarCheckItemBtn, "click", () => addExitItem("ruzgar"));
+on(addBulutCheckItemBtn, "click", () => addExitItem("bulut"));
 
-todayTextInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addTodayItem(); });
-tomTextInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addTomorrowItem(); });
-newRuzgarCheckItemInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addExitItem("ruzgar"); });
-newBulutCheckItemInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addExitItem("bulut"); });
+on(todayTextInput, "keydown", (e) => { if (e.key === "Enter") addTodayItem(); });
+on(tomTextInput, "keydown", (e) => { if (e.key === "Enter") addTomorrowItem(); });
+on(newRuzgarCheckItemInput, "keydown", (e) => { if (e.key === "Enter") addExitItem("ruzgar"); });
+on(newBulutCheckItemInput, "keydown", (e) => { if (e.key === "Enter") addExitItem("bulut"); });
 
-exportBtn.addEventListener("click", exportData);
-importFile.addEventListener("change", (e) => stageImport(e.target.files?.[0]));
+on(exportBtn, "click", exportData);
+on(importFile, "change", (e) => stageImport(e.target.files?.[0]));
 
-importOverwriteBtn.addEventListener("click", () => doImport("overwrite"));
-importMergeBtn.addEventListener("click", () => doImport("merge"));
-importCancelBtn.addEventListener("click", () => {
+on(importOverwriteBtn, "click", () => doImport("overwrite"));
+on(importMergeBtn, "click", () => doImport("merge"));
+on(importCancelBtn, "click", () => {
   importActions.hidden = true;
   importHint.textContent = "İçe aktarma iptal edildi.";
   importStaged = null;
 });
 
-clearDoneBtn.addEventListener("click", () => {
+on(clearDoneBtn, "click", () => {
   clearDoneInToday();
 });
 
-autoClearToggle.addEventListener("change", () => {
+on(autoClearToggle, "change", () => {
   state.settings.autoClearDoneAtNight = !!autoClearToggle.checked;
   saveState(state);
 });
 
-resetChecklistBtn.addEventListener("click", () => {
+on(resetChecklistBtn, "click", () => {
   normalizeState(state);
   for (const it of (state.ruzgarChecklist || [])) it.done = false;
   for (const it of (state.bulutChecklist || [])) it.done = false;
@@ -1388,7 +1423,7 @@ resetChecklistBtn.addEventListener("click", () => {
   renderAll();
 });
 
-themeToggleBtn.addEventListener("click", toggleTheme);
+on(themeToggleBtn, "click", toggleTheme);
 
 // Modal ESC close
 document.addEventListener("keydown", (e) => {
