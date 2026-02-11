@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0f14" />
+
+  <!-- iPad "Add to Home Screen" / fullscreen -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Doorboard" />
+
+  <title>Doorboard</title>
+
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./assets/icon.svg" />
+
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+  <div id="pixelShiftWrap" class="pixel-wrap">
+    <header class="topbar">
+      <div class="timeblock">
+        <div class="clock" aria-label="Saat">
+          <span id="hh">--</span><span class="colon" id="colon">:</span><span id="mm">--</span>
+        </div>
+        <div class="date" id="dateLine">--</div>
+      </div>
+
+      <div class="topRight">
+        <div class="netStatus" aria-label="Bağlantı durumu">
+          <span class="dot" id="netDot" aria-hidden="true"></span>
+          <span class="netText" id="netText">Offline</span>
+        </div>
+        <div class="lastWeather" id="lastWeather">Hava: —</div>
+
+        <button class="editBtn" id="editBtn" type="button" title="Düzenle">
+          ✏️ Düzenle
+        </button>
+      </div>
+    </header>
+
+    <main class="grid" role="main">
+      <!-- A) WEATHER -->
+      <section class="card" id="cardWeather" aria-labelledby="wTitle">
+        <div class="cardHead">
+          <h2 id="wTitle">İzmir • Bugün</h2>
+          <div class="subtle" id="wSub">08:00–18:00 özeti</div>
+        </div>
+
+        <div class="kv">
+          <div class="row"><div class="k">Gökyüzü</div><div class="v" id="wSky">—</div></div>
+          <div class="row"><div class="k">Yağış</div><div class="v" id="wRain">—</div></div>
+          <div class="row"><div class="k">Sıcaklık</div><div class="v" id="wTemp">—</div></div>
+          <div class="row"><div class="k">Rüzgar</div><div class="v" id="wWind">—</div></div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="tips">
+          <h3>Tavsiyeler</h3>
+          <ul id="wTips">
+            <li class="muted">Hava verisi yok. Son kayıt varsa gösterilecek.</li>
+          </ul>
+          <div class="hint" id="wHint" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <!-- B) TODAY SCHEDULE -->
+      <section class="card" id="cardSchedule" aria-labelledby="sTitle">
+        <div class="cardHead">
+          <h2 id="sTitle">Bugünün Programı</h2>
+          <div class="subtle">
+            <button class="smallBtn" id="clearDoneBtn" type="button">Tamamlananları Temizle</button>
+            <label class="toggle">
+              <input id="autoClearToggle" type="checkbox" />
+              <span>Gece otomatik temizle</span>
+            </label>
+          </div>
+        </div>
+
+        <ul class="checklist" id="todayList" aria-label="Bugünün program listesi"></ul>
+
+        <div class="divider"></div>
+
+        <div class="tomorrow">
+          <h3>Yarın</h3>
+          <ul class="miniList" id="tomorrowList" aria-label="Yarın listesi"></ul>
+        </div>
+      </section>
+
+      <!-- C) NOTES & EXIT CHECKLIST -->
+      <section class="card" id="cardNotes" aria-labelledby="nTitle">
+        <div class="cardHead">
+          <h2 id="nTitle">Notlar & Çıkış Kontrol</h2>
+          <div class="subtle">
+            <button class="smallBtn" id="resetChecklistBtn" type="button">Hepsini Sıfırla</button>
+          </div>
+        </div>
+
+        <div class="notes">
+          <h3>Hatırlatmalar</h3>
+          <div class="notesBox" id="notesBox" aria-label="Hatırlatmalar metni"></div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="exit">
+          <h3>Çıkış Kontrol</h3>
+          <ul class="checklist" id="exitList" aria-label="Çıkış kontrol listesi"></ul>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footerLeft">
+        <span class="chip" id="modeChip">Karanlık</span>
+        <button class="smallBtn" id="themeToggleBtn" type="button">Aydınlık/Karanlık</button>
+      </div>
+      <div class="footerRight">
+        <span class="muted">doorboard.v1 • statik • offline destekli</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- EDIT MODAL -->
+  <div class="modalBackdrop" id="modalBackdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+      <div class="modalHead">
+        <h2 id="mTitle">Düzenle</h2>
+        <button class="closeBtn" id="closeModalBtn" type="button" aria-label="Kapat">✕</button>
+      </div>
+
+      <div class="modalBody">
+        <div class="modalGrid">
+          <!-- Settings -->
+          <section class="panel">
+            <h3>Ayarlar</h3>
+
+            <label class="field">
+              <span>Hava Endpoint (Cloudflare Worker)</span>
+              <input id="endpointInput" type="url" placeholder="https://YOUR_WORKER_DOMAIN/weather.json" />
+              <small class="muted">
+                Boşsa/çalışmazsa Open-Meteo denenir. Endpoint değeri localStorage’da ayrıca tutulur.
+              </small>
+            </label>
+
+            <label class="field inline">
+              <input id="pixelShiftToggle" type="checkbox" />
+              <span>Pixel shift (ekran yanması riskini azalt)</span>
+            </label>
+          </section>
+
+          <!-- Today schedule editor -->
+          <section class="panel">
+            <h3>Bugün</h3>
+
+            <div class="adder">
+              <input id="todayTimeInput" type="text" inputmode="numeric" placeholder="09:30 (opsiyonel)" />
+              <input id="todayTextInput" type="text" placeholder="Program maddesi" />
+              <button class="smallBtn" id="addTodayBtn" type="button">Ekle</button>
+            </div>
+
+            <ul class="editList" id="editTodayList"></ul>
+          </section>
+
+          <!-- Tomorrow schedule editor -->
+          <section class="panel">
+            <h3>Yarın</h3>
+
+            <div class="adder">
+              <input id="tomTimeInput" type="text" inputmode="numeric" placeholder="10:00 (opsiyonel)" />
+              <input id="tomTextInput" type="text" placeholder="Yarın maddesi (max 3)" />
+              <button class="smallBtn" id="addTomBtn" type="button">Ekle</button>
+            </div>
+
+            <ul class="editList" id="editTomList"></ul>
+          </section>
+
+          <!-- Notes + checklist editor -->
+          <section class="panel">
+            <h3>Notlar</h3>
+            <label class="field">
+              <textarea id="notesInput" rows="6" placeholder="Serbest notlar..."></textarea>
+            </label>
+
+            <div class="divider soft"></div>
+
+            <h3>Çıkış Checklist</h3>
+            <div class="adder">
+              <input id="newCheckItemInput" type="text" placeholder="Yeni checklist öğesi" />
+              <button class="smallBtn" id="addCheckItemBtn" type="button">Ekle</button>
+            </div>
+            <ul class="editList" id="editExitList"></ul>
+          </section>
+
+          <!-- Backup -->
+          <section class="panel">
+            <h3>Yedekleme</h3>
+
+            <div class="backupRow">
+              <button class="smallBtn" id="exportBtn" type="button">Veriyi Dışa Aktar (JSON)</button>
+              <label class="fileBtn">
+                <input id="importFile" type="file" accept="application/json" />
+                İçe Aktar (JSON)
+              </label>
+            </div>
+
+            <div class="importActions" id="importActions" hidden>
+              <div class="muted">İçe aktarma hazır. Ne yapmak istiyorsun?</div>
+              <div class="btnRow">
+                <button class="smallBtn" id="importOverwriteBtn" type="button">Overwrite</button>
+                <button class="smallBtn" id="importMergeBtn" type="button">Merge</button>
+                <button class="smallBtn ghost" id="importCancelBtn" type="button">Vazgeç</button>
+              </div>
+            </div>
+
+            <div class="hint" id="importHint"></div>
+          </section>
+        </div>
+      </div>
+
+      <div class="modalFoot">
+        <button class="primaryBtn" id="saveBtn" type="button">Kaydet</button>
+        <button class="smallBtn ghost" id="cancelBtn" type="button">İptal</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
