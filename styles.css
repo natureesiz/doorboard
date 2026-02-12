@@ -13,7 +13,7 @@
     --radius:20px;
     --pad:18px;
     --itemFontSize:18px;
-    --weatherAccent:#fbbf24;
+    --accentTitleColor:#fbbf24;
   
     --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
   }
@@ -29,7 +29,7 @@
     --good:#059669;
     --bad:#e11d48;
     --shadow: 0 12px 30px rgba(0,0,0,.12);
-    --weatherAccent:#b45309;
+    --accentTitleColor:#b45309;
   }
   
   *{box-sizing:border-box}
@@ -87,7 +87,7 @@ body{
   body.modal-open .centerLeaveOverlay{
     opacity:0 !important;
   }
-  body.modal-open .exitAnchor{
+  body.modal-open .exitCountdownTopbar{
     opacity:0 !important;
   }
 
@@ -114,15 +114,39 @@ body{
   }
   
   .topbar{
-    display:flex;
+    display:grid;
+    grid-template-columns:minmax(0, 1fr) auto minmax(0, 1fr);
     align-items:flex-start;
-    justify-content:space-between;
     gap:16px;
     margin-bottom:14px;
     animation:fadeSlideIn .35s ease both;
   }
   
-  .timeblock{display:flex; flex-direction:column; gap:6px}
+  .timeblock{
+    grid-column:1;
+    justify-self:start;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    min-width:0;
+  }
+  .exitCountdownTopbar{
+    grid-column:2;
+    justify-self:center;
+    display:flex;
+    align-items:flex-start;
+    justify-content:center;
+    min-width:0;
+    max-width:min(46vw, 460px);
+    opacity:0;
+    transform:translateY(-4px);
+    transition:opacity .22s ease, transform .22s ease;
+    pointer-events:none;
+  }
+  .exitCountdownTopbar.is-visible{
+    opacity:1;
+    transform:translateY(0);
+  }
   .clock{
     font-size:64px;
     font-weight:800;
@@ -141,6 +165,8 @@ body{
     font-weight:600;
   }
   .topRight{
+    grid-column:3;
+    justify-self:end;
     display:flex;
     flex-direction:column;
     align-items:flex-end;
@@ -218,7 +244,7 @@ body{
   .centerLeaveOverlay{
     position:fixed;
     inset:0;
-    z-index:1300;
+    z-index:1600;
     pointer-events:none;
     display:flex;
     align-items:center;
@@ -239,16 +265,16 @@ body{
     background:linear-gradient(180deg, rgba(0,0,0,.56), rgba(0,0,0,.32));
   }
   .centerLeaveBlock.is-visible{
-    max-width:980px;
-    padding:22px 34px 16px;
+    max-width:1100px;
+    padding:24px 38px 18px;
   }
   .centerLeaveBlock .leaveMain{
     justify-content:center;
     margin-top:4px;
   }
   .centerLeaveBlock .leaveDelta{
-    font-size:96px;
-    min-width:5.1ch;
+    font-size:92px;
+    min-width:5.2ch;
     text-align:center;
     line-height:1.02;
     letter-spacing:1px;
@@ -307,22 +333,40 @@ body{
     .grid{ grid-template-columns: minmax(290px, 1fr) minmax(520px, 1.45fr) minmax(310px, 1fr); }
     .clock{font-size:72px}
     .leaveTarget, .leaveDelta{ font-size:64px; }
-    .centerLeaveBlock .leaveDelta{ font-size:106px; }
+    .centerLeaveBlock .leaveDelta{ font-size:92px; }
   }
   @media (max-width: 860px){
-    .topbar{ flex-direction:column; align-items:stretch; }
-    .topRight{ align-items:flex-start; }
+    .topbar{
+      grid-template-columns:1fr;
+      align-items:stretch;
+      gap:10px;
+    }
+    .timeblock{ grid-column:1; }
+    .exitCountdownTopbar{
+      grid-column:1;
+      justify-self:stretch;
+      justify-content:flex-start;
+      max-width:100%;
+    }
+    .topRight{
+      grid-column:1;
+      justify-self:stretch;
+      align-items:flex-start;
+    }
     .controlRow{ width:100%; justify-content:space-between; }
     .leaveTarget, .leaveDelta{ font-size:44px; }
     .leaveBlock.is-visible{ max-width:420px; padding:10px 14px; }
     .centerLeaveBlock.is-visible{ max-width:94vw; padding:18px 18px 14px; }
-    .centerLeaveBlock .leaveDelta{ font-size:82px; }
+    .centerLeaveBlock .leaveDelta{ font-size:84px; }
     .leaveTargetSub{ font-size:16px; }
+    .leaveTopbarBlock.is-visible{ max-width:94vw; padding:10px 14px 10px; }
+    .leaveTopbarBlock .leaveDelta{ font-size:44px; min-width:5.1ch; }
   }
   @media (max-width: 560px){
     .leaveTarget, .leaveDelta{ font-size:36px; }
     .leaveBlock.is-visible{ max-width:340px; }
-    .centerLeaveBlock .leaveDelta{ font-size:68px; }
+    .centerLeaveBlock .leaveDelta{ font-size:74px; }
+    .leaveTopbarBlock .leaveDelta{ font-size:38px; min-width:5.05ch; }
   }
   
   .card{
@@ -352,8 +396,9 @@ body{
     font-weight:900;
     letter-spacing:.2px;
   }
-  .weatherSectionTitle{
-    color:var(--weatherAccent);
+  .weatherSectionTitle,
+  .accentTitle{
+    color:var(--accentTitleColor);
   }
   
   h2{
@@ -554,49 +599,33 @@ body{
     gap:10px 12px;
     align-items:center;
   }
-  .exitAnchor{
-    position:fixed;
-    left:50%;
-    top:calc(env(safe-area-inset-top) + var(--topbar-height, 84px) + 8px);
-    transform:translateX(-50%) translateY(-6px);
-    z-index:900;
-    pointer-events:none;
-    opacity:0;
-    transition:opacity .22s ease, transform .22s ease;
-  }
-  .exitAnchor.is-visible{
-    opacity:1;
-    transform:translateX(-50%) translateY(0);
-  }
-  .exitAnchor[hidden]{
-    display:none !important;
-  }
-  .leaveAnchorBlock{
+  .leaveTopbarBlock{
     margin:0 auto;
     max-width:0;
+    min-width:0;
     transform:translateY(-2px);
     transition:max-width .24s ease, opacity .2s ease, padding .24s ease, transform .24s ease;
     background:linear-gradient(180deg, rgba(0,0,0,.34), rgba(0,0,0,.16));
     box-shadow:0 10px 24px rgba(0,0,0,.38);
   }
-  .leaveAnchorBlock.is-visible{
-    max-width:520px;
-    padding:10px 18px 10px;
+  .leaveTopbarBlock.is-visible{
+    max-width:460px;
+    padding:8px 14px 8px;
     transform:translateY(0);
   }
-  .leaveAnchorBlock .leaveMain{
+  .leaveTopbarBlock .leaveMain{
     justify-content:center;
     margin-top:2px;
   }
-  .leaveAnchorBlock .leaveDelta{
-    font-size:58px;
+  .leaveTopbarBlock .leaveDelta{
+    font-size:46px;
     line-height:1.05;
-    min-width:4.9ch;
+    min-width:5.05ch;
     text-align:center;
   }
-  .leaveAnchorBlock .leaveTargetSub{
-    margin-top:4px;
-    font-size:17px;
+  .leaveTopbarBlock .leaveTargetSub{
+    margin-top:2px;
+    font-size:14px;
   }
   .matrixHead{
     font-size:20px;
@@ -864,7 +893,7 @@ body{
     display:grid;
     place-items:center;
     padding:18px;
-    z-index:1000;
+    z-index:5000;
     pointer-events:auto;
   }
   .modalBackdrop[hidden]{
@@ -1092,7 +1121,7 @@ body{
     .weatherVisual *{ animation:none !important; transition:none !important; }
     .leaveBlock, .leaveDelta, .topbar, .card{ animation:none !important; transition:none !important; }
   .fullscreenCountdown{ -webkit-backdrop-filter:none; backdrop-filter:none; }
-  .screenSaverLayer, .screenSaverInfo, .centerLeaveOverlay, .exitAnchor{ transition:none !important; transform:none !important; }
+  .screenSaverLayer, .screenSaverInfo, .centerLeaveOverlay, .exitCountdownTopbar{ transition:none !important; transform:none !important; }
   .dashboard-returning{ animation:none !important; }
 }
 

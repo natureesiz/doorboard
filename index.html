@@ -32,6 +32,16 @@
         <div class="date" id="dateLine">--</div>
       </div>
 
+      <div id="exitCountdownTopbar" class="exitCountdownTopbar" aria-live="polite">
+        <div class="leaveBlock leaveTopbarBlock" id="leaveTopbarBlock">
+          <div class="leaveLabel">Evden Çıkış</div>
+          <div class="leaveMain">
+            <span class="leaveDelta" id="leaveDeltaTopbar">00:08</span>
+          </div>
+          <div class="leaveTargetSub" id="leaveTargetTimeTopbar">07:35</div>
+        </div>
+      </div>
+
       <div class="topRight">
         <div class="netStatus" aria-label="Bağlantı durumu">
           <span class="dot" id="netDot" aria-hidden="true"></span>
@@ -82,7 +92,7 @@
 
       <section class="card matrixCard" id="cardExitMatrix" aria-labelledby="xTitle">
         <div class="cardHead">
-          <h2 id="xTitle">Çıkış Kontrolleri</h2>
+          <h2 id="xTitle" class="accentTitle">Çıkış Kontrolleri</h2>
           <button class="smallBtn" id="resetChecklistBtn" type="button">Günlük Tikleri Sıfırla</button>
         </div>
 
@@ -101,7 +111,7 @@
 
       <section class="card notesCard" id="cardNotes" aria-labelledby="nTitle">
         <div class="cardHead">
-          <h2 id="nTitle">Notlar</h2>
+          <h2 id="nTitle" class="accentTitle">Notlar</h2>
         </div>
         <div class="notes">
           <ul class="notesChecklist" id="notesList" aria-label="Notlar listesi"></ul>
@@ -121,23 +131,13 @@
     </footer>
   </div>
 
-  <div class="exitAnchor" id="exitAnchor" aria-hidden="true" hidden>
-    <div class="leaveBlock leaveAnchorBlock" id="leaveAnchorBlock" aria-live="polite">
+  <div class="centerLeaveOverlay" id="exitCountdownCenter" aria-hidden="true">
+    <div class="leaveBlock centerLeaveBlock" id="leaveCenterBlock" aria-live="polite">
       <div class="leaveLabel">Evden Çıkış</div>
       <div class="leaveMain">
-        <span class="leaveDelta" id="leaveDeltaAnchor">00:08</span>
+        <span class="leaveDelta" id="leaveDeltaCenter">00:08</span>
       </div>
-      <div class="leaveTargetSub" id="leaveTargetTimeAnchor">07:35</div>
-    </div>
-  </div>
-
-  <div class="centerLeaveOverlay" id="leaveOverlay" aria-hidden="true">
-    <div class="leaveBlock centerLeaveBlock" id="leaveBlock" aria-live="polite">
-      <div class="leaveLabel">Evden Çıkış</div>
-      <div class="leaveMain">
-        <span class="leaveDelta" id="leaveDelta">00:08</span>
-      </div>
-      <div class="leaveTargetSub" id="leaveTargetTime">07:35</div>
+      <div class="leaveTargetSub" id="leaveTargetTimeCenter">07:35</div>
     </div>
   </div>
 
