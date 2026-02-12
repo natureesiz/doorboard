@@ -20,6 +20,9 @@
 </head>
 
 <body>
+  <div id="bg" class="bgLayer" aria-hidden="true"></div>
+  <div id="bgShade" class="bgShade" aria-hidden="true"></div>
+
   <div id="pixelShiftWrap" class="pixel-wrap">
     <header class="topbar">
       <div class="timeblock">
@@ -37,23 +40,14 @@
         <div class="lastWeather" id="lastWeather">Hava: —</div>
 
         <div class="controlRow">
-          <div class="leaveBlock" id="leaveBlock" aria-live="polite">
-            <div class="leaveLabel">Evden Çıkış</div>
-            <div class="leaveMain">
-              <span class="leaveTarget" id="leaveTargetTime">07:35</span>
-              <span class="leaveDelta" id="leaveDelta">-00:08</span>
-            </div>
-          </div>
-
-          <button class="editBtn" id="editBtn" type="button" title="Düzenle">
-            ✏️ Düzenle
-          </button>
+          <button class="iconBtn" id="soundToggleBtn" type="button" title="Ses" aria-label="Ses">🔈</button>
+          <button class="iconBtn" id="editBtn" type="button" title="Ayarlar" aria-label="Ayarlar">⚙</button>
         </div>
+        <div class="soundHint" id="soundHint" hidden>Sesi etkinleştirmek için ekrana dokunun</div>
       </div>
     </header>
 
     <main class="grid" role="main">
-      <!-- A) WEATHER -->
       <section class="card" id="cardWeather" aria-labelledby="wTitle">
         <div class="cardHead">
           <h2 id="wTitle">İzmir • Bugün</h2>
@@ -72,16 +66,6 @@
           <div class="row"><div class="k">Sıcaklık</div><div class="v" id="wTemp">—</div></div>
           <div class="row"><div class="k">Rüzgar</div><div class="v" id="wWind">—</div></div>
         </div>
-        <div class="weatherVisual weather-unknown" id="weatherVisual" aria-hidden="true">
-          <div class="sunCore"></div>
-          <div class="sunRay"></div>
-          <div class="cloudMain"></div>
-          <div class="rainDrop r1"></div>
-          <div class="rainDrop r2"></div>
-          <div class="rainDrop r3"></div>
-          <div class="windLine w1"></div>
-          <div class="windLine w2"></div>
-        </div>
 
         <div class="divider"></div>
 
@@ -94,61 +78,31 @@
         </div>
       </section>
 
-      <!-- B) TODAY SCHEDULE -->
-      <section class="card" id="cardSchedule" aria-labelledby="sTitle">
+      <section class="card matrixCard" id="cardExitMatrix" aria-labelledby="xTitle">
         <div class="cardHead">
-          <h2 id="sTitle">Bugünün Programı</h2>
-          <div class="subtle">
-            <button class="smallBtn" id="clearDoneBtn" type="button">Tamamlananları Temizle</button>
-            <label class="toggle">
-              <input id="autoClearToggle" type="checkbox" />
-              <span>Gece otomatik temizle</span>
-            </label>
-          </div>
+          <h2 id="xTitle">Çıkış Kontrolleri</h2>
+          <button class="smallBtn" id="resetChecklistBtn" type="button">Günlük Tikleri Sıfırla</button>
         </div>
 
-        <ul class="checklist" id="todayList" aria-label="Bugünün program listesi"></ul>
+        <div class="exitMatrix" id="exitMatrix" aria-label="Çıkış kontrol matrisi">
+          <div class="matrixHead">Bulut</div>
+          <div class="matrixHead matrixHeadCenter">Öğeler</div>
+          <div class="matrixHead">Rüzgar</div>
 
-        <div class="divider"></div>
+          <div id="exitMatrixRows" class="matrixRows"></div>
 
-        <div class="tomorrow">
-          <h3>Yarın</h3>
-          <ul class="miniList" id="tomorrowList" aria-label="Yarın listesi"></ul>
+          <div class="matrixWish" id="bulutWish" hidden>İyi dersler</div>
+          <div class="matrixWishCenter"></div>
+          <div class="matrixWish" id="ruzgarWish" hidden>İyi dersler</div>
         </div>
       </section>
 
-      <!-- C) NOTES & EXIT CHECKLIST -->
-      <section class="card" id="cardNotes" aria-labelledby="nTitle">
+      <section class="card notesCard" id="cardNotes" aria-labelledby="nTitle">
         <div class="cardHead">
-          <h2 id="nTitle">Notlar & Çıkış Kontrolleri</h2>
-          <div class="subtle">
-            <button class="smallBtn" id="resetChecklistBtn" type="button">Hepsini Sıfırla</button>
-          </div>
+          <h2 id="nTitle">Notlar</h2>
         </div>
-
-        <div class="dualGrid">
-          <div class="stackCol">
-            <div class="notes">
-              <h3>Notlar</h3>
-              <div class="notesBox" id="notesBox" aria-label="Kalıcı notlar"></div>
-            </div>
-          </div>
-
-          <div class="stackCol">
-            <div class="exit">
-              <h3>Rüzgar</h3>
-              <ul class="checklist" id="ruzgarExitList" aria-label="Rüzgar çıkış kontrol listesi"></ul>
-              <div class="kidWish" id="ruzgarWish" hidden>İyi dersler</div>
-            </div>
-          </div>
-
-          <div class="stackCol">
-            <div class="exit">
-              <h3>Bulut</h3>
-              <ul class="checklist" id="bulutExitList" aria-label="Bulut çıkış kontrol listesi"></ul>
-              <div class="kidWish" id="bulutWish" hidden>İyi dersler</div>
-            </div>
-          </div>
+        <div class="notes">
+          <ul class="notesChecklist" id="notesList" aria-label="Notlar listesi"></ul>
         </div>
       </section>
     </main>
@@ -165,7 +119,16 @@
     </footer>
   </div>
 
-  <!-- EDIT MODAL: wrapper disinda tutulur (iOS Safari fixed/transform touch buglarini azaltir) -->
+  <div class="centerLeaveOverlay" id="leaveOverlay" aria-hidden="true">
+    <div class="leaveBlock centerLeaveBlock" id="leaveBlock" aria-live="polite">
+      <div class="leaveLabel">Evden Çıkış</div>
+      <div class="leaveMain">
+        <span class="leaveDelta" id="leaveDelta">00:08</span>
+      </div>
+      <div class="leaveTargetSub" id="leaveTargetTime">07:35</div>
+    </div>
+  </div>
+
   <div class="modalBackdrop" id="modalBackdrop" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
       <div class="modalHead">
@@ -175,7 +138,6 @@
 
       <div class="modalBody">
         <div class="modalGrid">
-          <!-- Settings -->
           <section class="panel">
             <h3>Ayarlar</h3>
 
@@ -190,6 +152,11 @@
             <label class="field inline">
               <input id="pixelShiftToggle" type="checkbox" />
               <span>Pixel shift (ekran yanması riskini azalt)</span>
+            </label>
+
+            <label class="field inline">
+              <input id="soundEnabledToggle" type="checkbox" />
+              <span>Geri sayım sesi</span>
             </label>
           </section>
 
@@ -216,61 +183,38 @@
               <input id="enableLateModeToggle" type="checkbox" />
               <span>Geç kalma modu (kırmızı tema)</span>
             </label>
+
+            <div class="divider soft"></div>
+
+            <h3>Screen Saver</h3>
+            <label class="field inline">
+              <input id="screenSaverEnabledToggle" type="checkbox" />
+              <span>Screen Saver aktif</span>
+            </label>
+            <label class="field">
+              <span>Idle timeout (dakika)</span>
+              <input id="screenSaverTimeoutInput" type="number" inputmode="numeric" min="1" max="240" placeholder="10" />
+            </label>
           </section>
 
-          <!-- Today schedule editor -->
-          <section class="panel">
-            <h3>Bugün</h3>
-
-            <div class="adder">
-              <input id="todayTimeInput" type="text" inputmode="numeric" placeholder="09:30 (opsiyonel)" />
-              <input id="todayTextInput" type="text" placeholder="Program maddesi" />
-              <button class="smallBtn" id="addTodayBtn" type="button">Ekle</button>
-            </div>
-
-            <ul class="editList" id="editTodayList"></ul>
-          </section>
-
-          <!-- Tomorrow schedule editor -->
-          <section class="panel">
-            <h3>Yarın</h3>
-
-            <div class="adder">
-              <input id="tomTimeInput" type="text" inputmode="numeric" placeholder="10:00 (opsiyonel)" />
-              <input id="tomTextInput" type="text" placeholder="Yarın maddesi (max 3)" />
-              <button class="smallBtn" id="addTomBtn" type="button">Ekle</button>
-            </div>
-
-            <ul class="editList" id="editTomList"></ul>
-          </section>
-
-          <!-- Notes + checklists editor -->
           <section class="panel">
             <h3>Notlar</h3>
-            <label class="field">
-              <textarea id="notesInput" rows="6" placeholder="Kalıcı notlar..."></textarea>
-            </label>
+            <div class="adder adderSingle">
+              <input id="newNoteItemInput" type="text" placeholder="Yeni not" />
+              <button class="smallBtn" id="addNoteItemBtn" type="button">Ekle</button>
+            </div>
+            <ul class="editList" id="editNotesList"></ul>
 
             <div class="divider soft"></div>
 
-            <h3>Rüzgar Çıkış Kontrolleri</h3>
-            <div class="adder">
-              <input id="newRuzgarCheckItemInput" type="text" placeholder="Yeni rüzgar kontrol öğesi" />
-              <button class="smallBtn" id="addRuzgarCheckItemBtn" type="button">Ekle</button>
+            <h3>Çıkış Kontrol Öğeleri</h3>
+            <div class="adder adderSingle">
+              <input id="newExitItemInput" type="text" placeholder="Yeni kontrol öğesi" />
+              <button class="smallBtn" id="addExitItemBtn" type="button">Ekle</button>
             </div>
-            <ul class="editList" id="editRuzgarExitList"></ul>
-
-            <div class="divider soft"></div>
-
-            <h3>Bulut Çıkış Kontrolleri</h3>
-            <div class="adder">
-              <input id="newBulutCheckItemInput" type="text" placeholder="Yeni bulut kontrol öğesi" />
-              <button class="smallBtn" id="addBulutCheckItemBtn" type="button">Ekle</button>
-            </div>
-            <ul class="editList" id="editBulutExitList"></ul>
+            <ul class="editList" id="editExitItemsList"></ul>
           </section>
 
-          <!-- Backup -->
           <section class="panel">
             <h3>Yedekleme</h3>
 
@@ -300,6 +244,22 @@
         <button class="primaryBtn" id="saveBtn" type="button">Kaydet</button>
         <button class="smallBtn ghost" id="cancelBtn" type="button">İptal</button>
       </div>
+    </div>
+  </div>
+
+  <div class="fullscreenCountdown" id="fullscreenCountdown" hidden>
+    <div class="fullscreenCountdownValue" id="fullscreenCountdownValue">10</div>
+  </div>
+
+  <div class="screenSaverLayer" id="screenSaverLayer" hidden>
+    <div class="screenSaverInfo" id="screenSaverInfo">
+      <div class="screenSaverClock"><span id="ssHh">--</span><span class="colon">:</span><span id="ssMm">--</span></div>
+      <div class="screenSaverDate" id="ssDateLine">--</div>
+      <ul class="screenSaverWeather" id="ssWeatherLines">
+        <li>Sabah: veri yok</li>
+        <li>Öğle: veri yok</li>
+        <li>Gece: bulutlu</li>
+      </ul>
     </div>
   </div>
 

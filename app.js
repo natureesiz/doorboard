@@ -1,27 +1,71 @@
 /**
- * Doorboard v1 (statik, offline destekli)
- * - localStorage key: "doorboard.v1"
- * - iPad Safari uyumlu: safe-area, touch, localStorage, file:// hata toleransı
- * - Hava: Worker endpoint (önerilen) -> çalışmazsa Open-Meteo fallback
+ * Doorboard (static, iOS 12.5.8 compatible)
+ * - Single storage key: doorboard.v1
+ * - No optional chaining / no nullish / no arrow functions
+ * - Modal touch-safe for iPad Safari
  */
 
-const STORAGE_KEY = "doorboard.v1";
-const ENDPOINT_STORAGE_KEY = "doorboard.weatherEndpoint";
-const memoryStorage = new Map();
-let storageWarningShown = false;
+var STORAGE_KEY = "doorboard.v1";
+var ENDPOINT_STORAGE_KEY = "doorboard.weatherEndpoint";
+
+var WEATHER_ENDPOINT_FALLBACK = "https://YOUR_WORKER_DOMAIN/weather.json";
+var WEATHER_REFRESH_MS = 30 * 60 * 1000;
+var CLOCK_TICK_MS = 1000;
+var PIXEL_SHIFT_MS = 2 * 60 * 1000;
+var FETCH_TIMEOUT_MS = 8000;
+var DEFAULT_LEAVE_TIME = "07:35";
+var DEFAULT_BEFORE_MIN = 10;
+var DEFAULT_AFTER_MIN = 10;
+
+var DEFAULT_KID_ITEMS = [
+  "Anahtar",
+  "Cüzdan",
+  "Telefon",
+  "Kart",
+  "Şarj",
+  "Kulaklık"
+];
+
+var IZMIR = { lat: 38.4237, lon: 27.1428, tz: "Europe/Istanbul" };
+
+var memoryStorage = {};
+var storageWarningShown = false;
+var importStaged = null;
+var pixelShiftTimer = null;
+var pixelShiftPhase = 0;
+var isModalOpen = false;
+var lastLeaveDeltaText = "";
+var lastFullscreenSecond = null;
+var wallpaperLoadToken = 0;
+var lastInteractionTimestamp = Date.now();
+var dashboardReturningUntil = 0;
+var audioCtx = null;
+var audioUnlocked = false;
+var lastCountdownSoundSecond = null;
+var lastCountdownSoundTargetKey = "";
+var soundHintShown = false;
+var screenSaverMinuteStamp = "";
+var screenSaverShiftIndex = 0;
+var screenSaverOffsets = [
+  { x: 0, y: 0 },
+  { x: 10, y: 4 },
+  { x: -10, y: 6 },
+  { x: 8, y: -6 },
+  { x: -8, y: -4 }
+];
 
 function warnStorageFallback(err){
   if (storageWarningShown) return;
   storageWarningShown = true;
-  console.warn("Persistent storage unavailable, using in-memory fallback.", err);
+  try { console.warn("Storage unavailable, using in-memory fallback.", err); } catch(e) {}
 }
 
 function readStorage(key){
   try {
     return localStorage.getItem(key);
-  } catch (err){
+  } catch(err){
     warnStorageFallback(err);
-    return memoryStorage.get(key) ?? null;
+    return memoryStorage.hasOwnProperty(key) ? memoryStorage[key] : null;
   }
 }
 
@@ -29,158 +73,187 @@ function writeStorage(key, value){
   try {
     localStorage.setItem(key, value);
     return true;
-  } catch (err){
+  } catch(err){
     warnStorageFallback(err);
-    memoryStorage.set(key, String(value));
+    memoryStorage[key] = String(value);
     return false;
   }
 }
 
 function isPersistentStorageAvailable(){
-  const probeKey = "__doorboard_storage_probe__";
+  var probe = "__doorboard_probe__";
   try {
-    localStorage.setItem(probeKey, "1");
-    localStorage.removeItem(probeKey);
+    localStorage.setItem(probe, "1");
+    localStorage.removeItem(probe);
     return true;
-  } catch (err){
+  } catch(err){
     warnStorageFallback(err);
     return false;
   }
 }
 
-/**
- * ÖNERİLEN: Cloudflare Worker endpoint (env ile değiştirilebilir mantığı)
- * Kullanıcı bunu Edit modundan ayarlayabilir. Ayrıca spec gereği şu satır korunur:
- */
-const WEATHER_ENDPOINT =
-  readStorage(ENDPOINT_STORAGE_KEY) ||
-  "https://YOUR_WORKER_DOMAIN/weather.json";
+function $(sel){
+  return document.querySelector(sel);
+}
 
-// İzmir koordinatları (merkez)
-const IZMIR = { lat: 38.4237, lon: 27.1428, tz: "Europe/Istanbul" };
+function pad2(n){
+  var s = String(Math.floor(Math.abs(n)));
+  return s.length < 2 ? "0" + s : s;
+}
 
-// Gün içi odak: 08:00–18:00 (v1: günlük özet kullanıyoruz)
-const WEATHER_REFRESH_MS = 30 * 60 * 1000; // 30 dk
-const CLOCK_TICK_MS = 1000; // 1 sn
-const PIXEL_SHIFT_MS = 2 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 8000;
-const DEFAULT_DEPARTURE_TIME = "07:35";
-const CHECK_GROUPS = ["ruzgar", "bulut"];
-const DEFAULT_KID_ITEMS = [
-  "Cüzdan",
-  "Anahtar",
-  "Telefon",
-  "Bilgisayar",
-  "Kulaklık",
-  "Şarj Aleti",
-  "Cüzdan/Kartlar"
-];
+function todayISO(date){
+  var d = date || new Date();
+  var y = d.getFullYear();
+  var m = pad2(d.getMonth() + 1);
+  var day = pad2(d.getDate());
+  return y + "-" + m + "-" + day;
+}
 
-let importStaged = null; // geçici import buffer
+function shiftISO(iso, days){
+  var p = String(iso || "").split("-");
+  if (p.length !== 3) return todayISO(new Date());
+  var dt = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+  dt.setDate(dt.getDate() + Number(days || 0));
+  return todayISO(dt);
+}
 
-// ---------- Utils ----------
-function pad2(n){ return String(n).padStart(2, "0"); }
-function nowTs(){ return Date.now(); }
-
-function todayISO(d = new Date()){
-  // YYYY-MM-DD, local timezone
-  const y = d.getFullYear();
-  const m = pad2(d.getMonth() + 1);
-  const dd = pad2(d.getDate());
-  return `${y}-${m}-${dd}`;
+function safeJsonParse(txt){
+  try { return JSON.parse(txt); } catch(e){ return null; }
 }
 
 function deepClone(obj){
-  try { return JSON.parse(JSON.stringify(obj)); }
-  catch { return obj; }
-}
-
-function safeJsonParse(str){
-  try { return JSON.parse(str); } catch { return null; }
+  try { return JSON.parse(JSON.stringify(obj)); } catch(e){ return obj; }
 }
 
 function uid(){
-  // basit id
   return Math.random().toString(16).slice(2) + "-" + Date.now().toString(16);
 }
 
-function isOnline(){
-  // navigator.onLine iOS'ta bazen "optimistic" olabilir; yine de temel sinyal
-  return navigator.onLine === true;
-}
-
-function fmtTimeHM(date = new Date()){
-  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-}
-
-function fmtTurkishDateLine(date = new Date()){
-  // "11 Şubat 2026 Çarşamba"
-  const fmt = new Intl.DateTimeFormat("tr-TR", {
-    day: "2-digit",
-    month: "long",
-    year: "numeric",
-    weekday: "long"
-  });
-  // "11 Şubat 2026 Çarşamba" formatına çok yakın döner
-  // Bazı iOS sürümlerinde virgül gelebilir; temizleyelim.
-  return fmt.format(date).replace(",", "");
-}
-
-function downloadJson(filename, dataObj){
-  const blob = new Blob([JSON.stringify(dataObj, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+function escapeHtml(str){
+  return String(str == null ? "" : str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function clamp(n, min, max){
-  return Math.max(min, Math.min(max, n));
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
 }
 
-async function fetchJsonWithTimeout(url, timeoutMs = FETCH_TIMEOUT_MS){
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { cache: "no-store", signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
+function isOnline(){
+  return navigator.onLine === true;
+}
+
+function fmtTimeHM(date){
+  var d = date || new Date();
+  return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+}
+
+function fmtTurkishDateLine(date){
+  var d = date || new Date();
+  var days = ["Pazar", "Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi"];
+  var months = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"];
+  return d.getDate() + " " + months[d.getMonth()] + " " + d.getFullYear() + " " + days[d.getDay()];
+}
+
+function normalizeTime(raw){
+  var s = String(raw || "").trim();
+  if (!s) return "";
+  var digits = s.replace(/[^\d]/g, "");
+  if (digits.length === 4){
+    return digits.slice(0,2) + ":" + digits.slice(2,4);
   }
+  if (s.indexOf(":") > -1){
+    var p = s.split(":");
+    if (p.length >= 2){
+      var hh = clamp(Number(p[0]) || 0, 0, 23);
+      var mm = clamp(Number(p[1]) || 0, 0, 59);
+      return pad2(hh) + ":" + pad2(mm);
+    }
+  }
+  return s;
 }
 
-// ---------- State ----------
-function defaultState(){
-  const d = new Date();
-  const tISO = todayISO(d);
+function normalizeLeaveTime(raw){
+  var t = normalizeTime(raw);
+  if (!/^\d{2}:\d{2}$/.test(t)) return DEFAULT_LEAVE_TIME;
+  var p = t.split(":");
+  var hh = clamp(Number(p[0]) || 0, 0, 23);
+  var mm = clamp(Number(p[1]) || 0, 0, 59);
+  return pad2(hh) + ":" + pad2(mm);
+}
 
+function buildDefaultKidChecklist(){
+  var out = [];
+  var i;
+  for (i = 0; i < DEFAULT_KID_ITEMS.length; i++){
+    out.push({ id: uid(), text: DEFAULT_KID_ITEMS[i], done: false });
+  }
+  return out;
+}
+
+function buildDefaultExitItems(){
+  var items = [];
+  var i;
+  for (i = 0; i < DEFAULT_KID_ITEMS.length; i++){
+    items.push({ id: uid(), text: DEFAULT_KID_ITEMS[i] });
+  }
+  return items;
+}
+
+function createDoneMapFromItems(items){
+  var m = {};
+  var i;
+  for (i = 0; i < items.length; i++) m[items[i].id] = false;
+  return m;
+}
+
+function defaultState(){
+  var tISO = todayISO(new Date());
+  var endpoint = readStorage(ENDPOINT_STORAGE_KEY) || WEATHER_ENDPOINT_FALLBACK;
+  var defaultExitItems = buildDefaultExitItems();
   return {
     settings: {
-      weatherEndpoint: WEATHER_ENDPOINT,
+      weatherEndpoint: endpoint,
       autoClearDoneAtNight: true,
       theme: "dark",
-      pixelShift: false
+      pixelShift: false,
+      soundEnabled: true,
+      screenSaverEnabled: true,
+      screenSaverTimeoutMinutes: 10
     },
     leaveTimeSettings: {
-      leaveTime: DEFAULT_DEPARTURE_TIME,
-      beforeMinutes: 10,
-      afterMinutes: 10,
+      leaveTime: DEFAULT_LEAVE_TIME,
+      beforeMinutes: DEFAULT_BEFORE_MIN,
+      afterMinutes: DEFAULT_AFTER_MIN,
       enableLateMode: true
     },
+    notes: {
+      lastResetDate: tISO,
+      items: []
+    },
     persistentNotes: "",
-    ruzgarChecklist: buildDefaultKidChecklist(),
-    bulutChecklist: buildDefaultKidChecklist(),
+    exitChecklist: {
+      lastResetDate: tISO,
+      items: defaultExitItems,
+      bulutDone: createDoneMapFromItems(defaultExitItems),
+      ruzgarDone: createDoneMapFromItems(defaultExitItems)
+    },
+    kids: {
+      ruzgar: buildDefaultKidChecklist(),
+      bulut: buildDefaultKidChecklist()
+    },
+    screenSaverMode: false,
     today: {
       date: tISO,
       schedule: [
         { id: uid(), time: "09:30", text: "Okul", done: false },
         { id: uid(), time: "18:00", text: "Market", done: false },
-        { id: uid(), time: "", text: "Kargoyu kontrol et", done: false },
+        { id: uid(), time: "", text: "Kargoyu kontrol et", done: false }
       ]
     },
     tomorrow: {
@@ -192,77 +265,249 @@ function defaultState(){
     },
     weatherCache: {
       fetchedAt: 0,
-      payload: null // normalized
+      payload: null
     }
   };
 }
 
-function buildDefaultKidChecklist(){
-  return DEFAULT_KID_ITEMS.map((text) => ({ id: uid(), text, done: false }));
-}
-
-function shiftISO(iso, days){
-  const [y,m,d] = iso.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setDate(dt.getDate() + days);
-  return todayISO(dt);
-}
-
-function loadState(){
-  const raw = readStorage(STORAGE_KEY);
-  const parsed = raw ? safeJsonParse(raw) : null;
-  if (!parsed || typeof parsed !== "object") {
-    const s = defaultState();
-    saveState(s);
-    return s;
-  }
-
-  // Şema toleransı: eksikleri tamamla
-  const base = defaultState();
-  const merged = mergeDeep(base, parsed);
-  migrateStateSchema(merged, parsed);
-  normalizeState(merged);
-  // Endpoint ayrıca spec'teki keyde de tutulmalı
-  try {
-    if (merged?.settings?.weatherEndpoint) {
-      writeStorage(ENDPOINT_STORAGE_KEY, merged.settings.weatherEndpoint);
+function mergeDeep(target, source){
+  var out = deepClone(target);
+  if (!source || typeof source !== "object") return out;
+  var keys = Object.keys(source);
+  var i;
+  for (i = 0; i < keys.length; i++){
+    var k = keys[i];
+    var sv = source[k];
+    var tv = out[k];
+    if (Object.prototype.toString.call(sv) === "[object Array]"){
+      out[k] = sv;
+    } else if (sv && typeof sv === "object" && tv && typeof tv === "object" && Object.prototype.toString.call(tv) !== "[object Array]"){
+      out[k] = mergeDeep(tv, sv);
+    } else {
+      out[k] = sv;
     }
-  } catch {}
-  saveState(merged);
-  return merged;
+  }
+  return out;
 }
 
 function migrateStateSchema(target, source){
   if (!target || !source || typeof source !== "object") return;
 
-  // departureTime eski settings'ten yeni root.leaveTimeSettings'e taşınır
-  if (source?.settings?.departureTime && !source?.leaveTimeSettings?.leaveTime){
+  if (source.settings && source.settings.departureTime && !(source.leaveTimeSettings && source.leaveTimeSettings.leaveTime)){
     target.leaveTimeSettings.leaveTime = source.settings.departureTime;
   }
 
-  // eski today.notes -> persistentNotes
-  if (typeof source?.today?.notes === "string" && !source?.persistentNotes){
-    target.persistentNotes = source.today.notes;
-  } else if (source?.today?.notes && typeof source.today.notes === "object" && !source?.persistentNotes){
-    target.persistentNotes = [source.today.notes.ruzgar, source.today.notes.bulut].filter(Boolean).join("\n");
+  if (typeof source.persistentNotes !== "string"){
+    if (source.today && typeof source.today.notes === "string"){
+      target.persistentNotes = source.today.notes;
+    } else if (source.today && source.today.notes && typeof source.today.notes === "object"){
+      var t1 = source.today.notes.ruzgar || "";
+      var t2 = source.today.notes.bulut || "";
+      target.persistentNotes = (t1 + "\n" + t2).replace(/^\n+|\n+$/g, "");
+    }
   }
 
-  // eski checklist alanlarından root checklists'e taşı
-  const legacyChecklist = Array.isArray(source?.today?.checklist) ? source.today.checklist : [];
-  const legacyGrouped = source?.today?.checklists;
-  const incomingRuzgar = Array.isArray(source?.ruzgarChecklist)
-    ? source.ruzgarChecklist
-    : Array.isArray(legacyGrouped?.ruzgar)
-      ? legacyGrouped.ruzgar
-      : legacyChecklist;
-  const incomingBulut = Array.isArray(source?.bulutChecklist)
-    ? source.bulutChecklist
-    : Array.isArray(legacyGrouped?.bulut)
-      ? legacyGrouped.bulut
-      : [];
+  var legacyChecklist = (source.today && source.today.checklist && Object.prototype.toString.call(source.today.checklist) === "[object Array]") ? source.today.checklist : [];
+  var legacyGrouped = source.today && source.today.checklists ? source.today.checklists : null;
 
-  if (incomingRuzgar.length) target.ruzgarChecklist = incomingRuzgar;
-  if (incomingBulut.length) target.bulutChecklist = incomingBulut;
+  if (!source.ruzgarChecklist || Object.prototype.toString.call(source.ruzgarChecklist) !== "[object Array]"){
+    if (legacyGrouped && Object.prototype.toString.call(legacyGrouped.ruzgar) === "[object Array]"){
+      target.ruzgarChecklist = legacyGrouped.ruzgar;
+    } else if (legacyChecklist.length){
+      target.ruzgarChecklist = legacyChecklist;
+    }
+  }
+
+  if (!source.bulutChecklist || Object.prototype.toString.call(source.bulutChecklist) !== "[object Array]"){
+    if (legacyGrouped && Object.prototype.toString.call(legacyGrouped.bulut) === "[object Array]"){
+      target.bulutChecklist = legacyGrouped.bulut;
+    }
+  }
+
+  if (!source.kids || typeof source.kids !== "object"){
+    target.kids = {
+      ruzgar: (source.ruzgarChecklist && Object.prototype.toString.call(source.ruzgarChecklist) === "[object Array]") ? source.ruzgarChecklist : (target.ruzgarChecklist || []),
+      bulut: (source.bulutChecklist && Object.prototype.toString.call(source.bulutChecklist) === "[object Array]") ? source.bulutChecklist : (target.bulutChecklist || [])
+    };
+  }
+
+  if (!source.exitChecklist || typeof source.exitChecklist !== "object"){
+    var legacyR = [];
+    var legacyB = [];
+    var i;
+    var itemByText = {};
+    var items = [];
+    var bulutDone = {};
+    var ruzgarDone = {};
+
+    if (source.kids && source.kids.ruzgar && Object.prototype.toString.call(source.kids.ruzgar) === "[object Array]"){
+      legacyR = source.kids.ruzgar;
+    } else if (source.ruzgarChecklist && Object.prototype.toString.call(source.ruzgarChecklist) === "[object Array]"){
+      legacyR = source.ruzgarChecklist;
+    }
+    if (source.kids && source.kids.bulut && Object.prototype.toString.call(source.kids.bulut) === "[object Array]"){
+      legacyB = source.kids.bulut;
+    } else if (source.bulutChecklist && Object.prototype.toString.call(source.bulutChecklist) === "[object Array]"){
+      legacyB = source.bulutChecklist;
+    }
+
+    function attachLegacy(arr){
+      var j;
+      for (j = 0; j < arr.length; j++){
+        var it = arr[j];
+        var rawText = "";
+        if (typeof it === "string") rawText = it;
+        else if (it && typeof it === "object") rawText = String(it.text == null ? "" : it.text);
+        var text = String(rawText || "").replace(/^\s+|\s+$/g, "");
+        var key;
+        if (!text) continue;
+        key = text.toLowerCase();
+        if (!itemByText[key]){
+          itemByText[key] = { id: uid(), text: text };
+          items.push(itemByText[key]);
+        }
+      }
+    }
+
+    attachLegacy(legacyB);
+    attachLegacy(legacyR);
+    if (!items.length){
+      items = buildDefaultExitItems();
+      for (i = 0; i < items.length; i++) itemByText[items[i].text.toLowerCase()] = items[i];
+    }
+
+    for (i = 0; i < items.length; i++){
+      bulutDone[items[i].id] = false;
+      ruzgarDone[items[i].id] = false;
+    }
+
+    for (i = 0; i < legacyB.length; i++){
+      var b = legacyB[i];
+      var bText = (typeof b === "string") ? b : (b && typeof b === "object" ? String(b.text == null ? "" : b.text) : "");
+      var bKey = String(bText || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+      var bItem = itemByText[bKey];
+      if (bItem && b && typeof b === "object" && b.done) bulutDone[bItem.id] = true;
+    }
+
+    for (i = 0; i < legacyR.length; i++){
+      var r = legacyR[i];
+      var rText = (typeof r === "string") ? r : (r && typeof r === "object" ? String(r.text == null ? "" : r.text) : "");
+      var rKey = String(rText || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+      var rItem = itemByText[rKey];
+      if (rItem && r && typeof r === "object" && r.done) ruzgarDone[rItem.id] = true;
+    }
+
+    target.exitChecklist = {
+      lastResetDate: source.exitChecklist && source.exitChecklist.lastResetDate ? source.exitChecklist.lastResetDate : (source.today && source.today.date ? source.today.date : todayISO(new Date())),
+      items: items,
+      bulutDone: bulutDone,
+      ruzgarDone: ruzgarDone
+    };
+  }
+
+  if (!source.notes || typeof source.notes !== "object"){
+    var noteItems = [];
+    var notesRaw = "";
+    var k;
+    if (typeof source.persistentNotes === "string" && source.persistentNotes.replace(/\s/g, "")){
+      notesRaw = source.persistentNotes;
+    } else if (source.today && typeof source.today.notes === "string"){
+      notesRaw = source.today.notes;
+    } else if (source.today && source.today.notes && typeof source.today.notes === "object"){
+      notesRaw = (source.today.notes.ruzgar || "") + "\n" + (source.today.notes.bulut || "");
+    }
+    if (notesRaw){
+      var lines = String(notesRaw).split(/\r?\n/);
+      for (k = 0; k < lines.length; k++){
+        var line = String(lines[k] || "").replace(/^\s+|\s+$/g, "");
+        if (line) noteItems.push({ id: uid(), text: line, done: false });
+      }
+    }
+    target.notes = {
+      lastResetDate: todayISO(new Date()),
+      items: noteItems
+    };
+  }
+}
+
+function normalizeItemArray(arr, allowTime){
+  var out = [];
+  var i;
+  if (!arr || Object.prototype.toString.call(arr) !== "[object Array]") return out;
+  for (i = 0; i < arr.length; i++){
+    var raw = arr[i];
+    if (raw && typeof raw === "object" && Object.prototype.toString.call(raw) !== "[object Array]"){
+      out.push({
+        id: raw.id ? String(raw.id) : uid(),
+        text: String(raw.text == null ? "" : raw.text),
+        done: !!raw.done,
+        time: allowTime ? String(raw.time == null ? "" : raw.time) : ""
+      });
+    } else if (typeof raw === "string"){
+      out.push({ id: uid(), text: raw, done: false, time: allowTime ? "" : "" });
+    }
+  }
+  return out;
+}
+
+function normalizeExitItems(items){
+  var out = [];
+  var i;
+  if (!items || Object.prototype.toString.call(items) !== "[object Array]") return out;
+  for (i = 0; i < items.length; i++){
+    var raw = items[i];
+    var text = "";
+    var id = "";
+    if (typeof raw === "string"){
+      text = String(raw).replace(/^\s+|\s+$/g, "");
+      id = uid();
+    } else if (raw && typeof raw === "object"){
+      text = String(raw.text == null ? "" : raw.text).replace(/^\s+|\s+$/g, "");
+      id = raw.id ? String(raw.id) : uid();
+    }
+    if (text){
+      out.push({ id: id, text: text });
+    }
+  }
+  return out;
+}
+
+function normalizeNotesItems(items){
+  var out = [];
+  var i;
+  if (!items || Object.prototype.toString.call(items) !== "[object Array]") return out;
+  for (i = 0; i < items.length; i++){
+    var raw = items[i];
+    var text = "";
+    var id = "";
+    var done = false;
+    if (typeof raw === "string"){
+      text = String(raw).replace(/^\s+|\s+$/g, "");
+      id = uid();
+    } else if (raw && typeof raw === "object"){
+      text = String(raw.text == null ? "" : raw.text).replace(/^\s+|\s+$/g, "");
+      id = raw.id ? String(raw.id) : uid();
+      done = !!raw.done;
+    }
+    if (text){
+      out.push({ id: id, text: text, done: done });
+    }
+  }
+  return out;
+}
+
+function normalizeDoneMap(map, items){
+  var out = {};
+  var i;
+  if (map && typeof map === "object"){
+    for (i = 0; i < items.length; i++){
+      var id = items[i].id;
+      out[id] = !!map[id];
+    }
+    return out;
+  }
+  for (i = 0; i < items.length; i++) out[items[i].id] = false;
+  return out;
 }
 
 function normalizeState(s){
@@ -272,510 +517,915 @@ function normalizeState(s){
   if (!s.tomorrow || typeof s.tomorrow !== "object") s.tomorrow = { date: shiftISO(todayISO(new Date()), 1), schedule: [] };
   if (!s.weatherCache || typeof s.weatherCache !== "object") s.weatherCache = { fetchedAt: 0, payload: null };
 
-  if (typeof s.settings.weatherEndpoint !== "string") s.settings.weatherEndpoint = WEATHER_ENDPOINT;
-  if (typeof s.settings.theme !== "string") s.settings.theme = "dark";
-  s.settings.theme = (s.settings.theme === "light") ? "light" : "dark";
+  if (typeof s.settings.weatherEndpoint !== "string") s.settings.weatherEndpoint = readStorage(ENDPOINT_STORAGE_KEY) || WEATHER_ENDPOINT_FALLBACK;
   s.settings.autoClearDoneAtNight = s.settings.autoClearDoneAtNight !== false;
+  s.settings.theme = (s.settings.theme === "light") ? "light" : "dark";
   s.settings.pixelShift = !!s.settings.pixelShift;
-  if (typeof s.today.date !== "string") s.today.date = todayISO(new Date());
-  if (typeof s.tomorrow.date !== "string") s.tomorrow.date = shiftISO(s.today.date, 1);
-  if (!Array.isArray(s.today.schedule)) s.today.schedule = [];
-  if (!Array.isArray(s.tomorrow.schedule)) s.tomorrow.schedule = [];
+  if (typeof s.settings.soundEnabled !== "boolean") s.settings.soundEnabled = true;
+  s.settings.soundEnabled = !!s.settings.soundEnabled;
+  if (typeof s.settings.screenSaverEnabled !== "boolean"){
+    if (typeof s.settings.clockOnlyEnabled === "boolean") s.settings.screenSaverEnabled = !!s.settings.clockOnlyEnabled;
+    else s.settings.screenSaverEnabled = true;
+  }
+  s.settings.screenSaverEnabled = !!s.settings.screenSaverEnabled;
+  if (!s.settings.screenSaverTimeoutMinutes){
+    s.settings.screenSaverTimeoutMinutes = s.settings.idleTimeoutMinutes;
+  }
+  s.settings.screenSaverTimeoutMinutes = clamp(Number(s.settings.screenSaverTimeoutMinutes) || 10, 1, 240);
 
   if (!s.leaveTimeSettings || typeof s.leaveTimeSettings !== "object"){
-    s.leaveTimeSettings = { leaveTime: DEFAULT_DEPARTURE_TIME, beforeMinutes: 10, afterMinutes: 10, enableLateMode: true };
+    s.leaveTimeSettings = {
+      leaveTime: DEFAULT_LEAVE_TIME,
+      beforeMinutes: DEFAULT_BEFORE_MIN,
+      afterMinutes: DEFAULT_AFTER_MIN,
+      enableLateMode: true
+    };
   }
-  s.leaveTimeSettings.leaveTime = normalizeDepartureTime(s.leaveTimeSettings.leaveTime || DEFAULT_DEPARTURE_TIME);
-  s.leaveTimeSettings.beforeMinutes = clamp(Number(s.leaveTimeSettings.beforeMinutes) || 10, 0, 240);
-  s.leaveTimeSettings.afterMinutes = clamp(Number(s.leaveTimeSettings.afterMinutes) || 10, 0, 240);
+  s.leaveTimeSettings.leaveTime = normalizeLeaveTime(s.leaveTimeSettings.leaveTime || DEFAULT_LEAVE_TIME);
+  s.leaveTimeSettings.beforeMinutes = clamp(Number(s.leaveTimeSettings.beforeMinutes) || DEFAULT_BEFORE_MIN, 0, 240);
+  s.leaveTimeSettings.afterMinutes = clamp(Number(s.leaveTimeSettings.afterMinutes) || DEFAULT_AFTER_MIN, 0, 240);
   s.leaveTimeSettings.enableLateMode = s.leaveTimeSettings.enableLateMode !== false;
 
-  s.persistentNotes = String(s.persistentNotes ?? "");
+  s.persistentNotes = String(s.persistentNotes == null ? "" : s.persistentNotes);
 
-  if (!Array.isArray(s.ruzgarChecklist)){
-    s.ruzgarChecklist = buildDefaultKidChecklist();
+  if (!s.notes || typeof s.notes !== "object") s.notes = {};
+  s.notes.lastResetDate = String(s.notes.lastResetDate || todayISO(new Date()));
+  s.notes.items = normalizeNotesItems(s.notes.items);
+
+  if (!s.exitChecklist || typeof s.exitChecklist !== "object") s.exitChecklist = {};
+  s.exitChecklist.items = normalizeExitItems(s.exitChecklist.items);
+  if (!s.exitChecklist.items.length) s.exitChecklist.items = buildDefaultExitItems();
+  s.exitChecklist.lastResetDate = String(s.exitChecklist.lastResetDate || todayISO(new Date()));
+  s.exitChecklist.bulutDone = normalizeDoneMap(s.exitChecklist.bulutDone, s.exitChecklist.items);
+  s.exitChecklist.ruzgarDone = normalizeDoneMap(s.exitChecklist.ruzgarDone, s.exitChecklist.items);
+
+  if (!s.kids || typeof s.kids !== "object") s.kids = {};
+  if (!s.kids.ruzgar || Object.prototype.toString.call(s.kids.ruzgar) !== "[object Array]"){
+    s.kids.ruzgar = (s.ruzgarChecklist && Object.prototype.toString.call(s.ruzgarChecklist) === "[object Array]") ? s.ruzgarChecklist : buildDefaultKidChecklist();
   }
-  if (!Array.isArray(s.bulutChecklist)){
-    s.bulutChecklist = buildDefaultKidChecklist();
+  if (!s.kids.bulut || Object.prototype.toString.call(s.kids.bulut) !== "[object Array]"){
+    s.kids.bulut = (s.bulutChecklist && Object.prototype.toString.call(s.bulutChecklist) === "[object Array]") ? s.bulutChecklist : buildDefaultKidChecklist();
   }
 
-  const normalizeItems = (arr, allowTime) => {
-    const out = [];
-    for (const raw of arr){
-      if (raw && typeof raw === "object" && !Array.isArray(raw)){
-        const it = raw;
-        out.push({
-          id: it.id ? String(it.id) : uid(),
-          text: String(it.text ?? ""),
-          done: !!it.done,
-          ...(allowTime ? { time: String(it.time ?? "") } : {})
-        });
-      } else if (typeof raw === "string"){
-        out.push({
-          id: uid(),
-          text: raw,
-          done: false,
-          ...(allowTime ? { time: "" } : {})
-        });
-      }
-    }
-    return out;
-  };
-  s.today.schedule = normalizeItems(s.today.schedule, true);
-  s.tomorrow.schedule = normalizeItems(s.tomorrow.schedule, true);
-  s.ruzgarChecklist = normalizeItems(s.ruzgarChecklist, false);
-  s.bulutChecklist = normalizeItems(s.bulutChecklist, false);
+  s.kids.ruzgar = normalizeItemArray(s.kids.ruzgar, false);
+  s.kids.bulut = normalizeItemArray(s.kids.bulut, false);
+  if (s.kids.ruzgar.length === 0) s.kids.ruzgar = buildDefaultKidChecklist();
+  if (s.kids.bulut.length === 0) s.kids.bulut = buildDefaultKidChecklist();
+
+  if (typeof s.screenSaverMode !== "boolean"){
+    s.screenSaverMode = !!s.clockOnlyMode;
+  }
+  s.screenSaverMode = !!s.screenSaverMode;
+
+  if (typeof s.today.date !== "string") s.today.date = todayISO(new Date());
+  if (typeof s.tomorrow.date !== "string") s.tomorrow.date = shiftISO(s.today.date, 1);
+  s.today.schedule = normalizeItemArray(s.today.schedule, true);
+  s.tomorrow.schedule = normalizeItemArray(s.tomorrow.schedule, true);
 }
 
-function saveState(state){
-  writeStorage(STORAGE_KEY, JSON.stringify(state));
+function saveState(st){
+  normalizeState(st);
+  writeStorage(STORAGE_KEY, JSON.stringify(st));
 }
 
-function mergeDeep(target, source){
-  // basit deep merge (object->object). Array'leri source ile overwrite eder.
-  const out = deepClone(target);
-  if (!source || typeof source !== "object") return out;
-
-  for (const k of Object.keys(source)){
-    const sv = source[k];
-    const tv = out[k];
-    if (Array.isArray(sv)) out[k] = sv;
-    else if (sv && typeof sv === "object" && tv && typeof tv === "object" && !Array.isArray(tv)){
-      out[k] = mergeDeep(tv, sv);
-    } else {
-      out[k] = sv;
-    }
+function loadState(){
+  var raw = readStorage(STORAGE_KEY);
+  var parsed = raw ? safeJsonParse(raw) : null;
+  if (!parsed || typeof parsed !== "object"){
+    var s = defaultState();
+    saveState(s);
+    return s;
   }
-  return out;
+  var base = defaultState();
+  var merged = mergeDeep(base, parsed);
+  migrateStateSchema(merged, parsed);
+  normalizeState(merged);
+  if (merged.settings.weatherEndpoint){
+    writeStorage(ENDPOINT_STORAGE_KEY, merged.settings.weatherEndpoint);
+  }
+  saveState(merged);
+  return merged;
 }
 
-let state = loadState();
+var state = loadState();
 
 // ---------- DOM ----------
-const $ = (sel) => document.querySelector(sel);
+var hhEl = $("#hh");
+var mmEl = $("#mm");
+var colonEl = $("#colon");
+var dateLineEl = $("#dateLine");
 
-const hhEl = $("#hh");
-const mmEl = $("#mm");
-const colonEl = $("#colon");
-const dateLineEl = $("#dateLine");
-const leaveBlockEl = $("#leaveBlock");
-const leaveTargetTimeEl = $("#leaveTargetTime");
-const leaveDeltaEl = $("#leaveDelta");
+var netDot = $("#netDot");
+var netText = $("#netText");
+var lastWeatherEl = $("#lastWeather");
 
-const netDot = $("#netDot");
-const netText = $("#netText");
-const lastWeatherEl = $("#lastWeather");
+var leaveBlockEl = $("#leaveBlock");
+var leaveOverlayEl = $("#leaveOverlay");
+var leaveTargetTimeEl = $("#leaveTargetTime");
+var leaveDeltaEl = $("#leaveDelta");
 
-const wSky = $("#wSky");
-const wRain = $("#wRain");
-const wTemp = $("#wTemp");
-const wWind = $("#wWind");
-const wTips = $("#wTips");
-const wHint = $("#wHint");
-const weatherVisual = $("#weatherVisual");
-const wIcon = $("#wIcon");
+var fullscreenCountdownEl = $("#fullscreenCountdown");
+var fullscreenCountdownValueEl = $("#fullscreenCountdownValue");
+var screenSaverLayerEl = $("#screenSaverLayer");
+var screenSaverInfoEl = $("#screenSaverInfo");
+var ssHhEl = $("#ssHh");
+var ssMmEl = $("#ssMm");
+var ssDateLineEl = $("#ssDateLine");
+var ssWeatherLinesEl = $("#ssWeatherLines");
 
-const todayList = $("#todayList");
-const tomorrowList = $("#tomorrowList");
-const notesBox = $("#notesBox");
-const ruzgarExitList = $("#ruzgarExitList");
-const bulutExitList = $("#bulutExitList");
-const ruzgarWish = $("#ruzgarWish");
-const bulutWish = $("#bulutWish");
+var bgEl = $("#bg");
 
-const editBtn = $("#editBtn");
-const modalBackdrop = $("#modalBackdrop");
-const closeModalBtn = $("#closeModalBtn");
-const cancelBtn = $("#cancelBtn");
-const saveBtn = $("#saveBtn");
+var wSky = $("#wSky");
+var wRain = $("#wRain");
+var wTemp = $("#wTemp");
+var wWind = $("#wWind");
+var wTips = $("#wTips");
+var wHint = $("#wHint");
+var wIcon = $("#wIcon");
 
-const endpointInput = $("#endpointInput");
-const pixelShiftToggle = $("#pixelShiftToggle");
-const departureTimeInput = $("#departureTimeInput");
-const beforeMinutesInput = $("#beforeMinutesInput");
-const afterMinutesInput = $("#afterMinutesInput");
-const enableLateModeToggle = $("#enableLateModeToggle");
+var notesList = $("#notesList");
+var exitMatrixRows = $("#exitMatrixRows");
+var ruzgarWish = $("#ruzgarWish");
+var bulutWish = $("#bulutWish");
 
-const todayTimeInput = $("#todayTimeInput");
-const todayTextInput = $("#todayTextInput");
-const addTodayBtn = $("#addTodayBtn");
-const editTodayList = $("#editTodayList");
+var editBtn = $("#editBtn");
+var soundToggleBtn = $("#soundToggleBtn");
+var soundHintEl = $("#soundHint");
+var modalBackdrop = $("#modalBackdrop");
+var closeModalBtn = $("#closeModalBtn");
+var cancelBtn = $("#cancelBtn");
+var saveBtn = $("#saveBtn");
 
-const tomTimeInput = $("#tomTimeInput");
-const tomTextInput = $("#tomTextInput");
-const addTomBtn = $("#addTomBtn");
-const editTomList = $("#editTomList");
+var endpointInput = $("#endpointInput");
+var pixelShiftToggle = $("#pixelShiftToggle");
+var soundEnabledToggle = $("#soundEnabledToggle");
+var departureTimeInput = $("#departureTimeInput");
+var beforeMinutesInput = $("#beforeMinutesInput");
+var afterMinutesInput = $("#afterMinutesInput");
+var enableLateModeToggle = $("#enableLateModeToggle");
+var screenSaverEnabledToggle = $("#screenSaverEnabledToggle");
+var screenSaverTimeoutInput = $("#screenSaverTimeoutInput");
 
-const notesInput = $("#notesInput");
-const newRuzgarCheckItemInput = $("#newRuzgarCheckItemInput");
-const addRuzgarCheckItemBtn = $("#addRuzgarCheckItemBtn");
-const editRuzgarExitList = $("#editRuzgarExitList");
-const newBulutCheckItemInput = $("#newBulutCheckItemInput");
-const addBulutCheckItemBtn = $("#addBulutCheckItemBtn");
-const editBulutExitList = $("#editBulutExitList");
+var newNoteItemInput = $("#newNoteItemInput");
+var addNoteItemBtn = $("#addNoteItemBtn");
+var editNotesList = $("#editNotesList");
+var newExitItemInput = $("#newExitItemInput");
+var addExitItemBtn = $("#addExitItemBtn");
+var editExitItemsList = $("#editExitItemsList");
 
-const exportBtn = $("#exportBtn");
-const importFile = $("#importFile");
-const importActions = $("#importActions");
-const importOverwriteBtn = $("#importOverwriteBtn");
-const importMergeBtn = $("#importMergeBtn");
-const importCancelBtn = $("#importCancelBtn");
-const importHint = $("#importHint");
+var exportBtn = $("#exportBtn");
+var importFile = $("#importFile");
+var importActions = $("#importActions");
+var importOverwriteBtn = $("#importOverwriteBtn");
+var importMergeBtn = $("#importMergeBtn");
+var importCancelBtn = $("#importCancelBtn");
+var importHint = $("#importHint");
 
-const clearDoneBtn = $("#clearDoneBtn");
-const autoClearToggle = $("#autoClearToggle");
-const resetChecklistBtn = $("#resetChecklistBtn");
+var resetChecklistBtn = $("#resetChecklistBtn");
 
-const themeToggleBtn = $("#themeToggleBtn");
-const modeChip = $("#modeChip");
+var themeToggleBtn = $("#themeToggleBtn");
+var modeChip = $("#modeChip");
+var pixelShiftWrap = $("#pixelShiftWrap");
+var runtimeWarningEl = $("#runtimeWarning");
 
-const pixelShiftWrap = $("#pixelShiftWrap");
-const runtimeWarningEl = $("#runtimeWarning");
-let storagePersistent = true;
-
-// ---------- Clock / Date ----------
-function renderClock(){
-  const d = new Date();
-  hhEl.textContent = pad2(d.getHours());
-  mmEl.textContent = pad2(d.getMinutes());
-  dateLineEl.textContent = fmtTurkishDateLine(d);
-  renderLeaveStatus(d);
-
-  // çok hafif "tick": colon opacity
-  const sec = d.getSeconds();
-  colonEl.style.opacity = (sec % 2 === 0) ? "0.55" : "0.95";
+// ---------- Helpers ----------
+function on(el, event, handler, opts){
+  if (!el) return;
+  if (opts && typeof opts === "object"){
+    el.addEventListener(event, handler, opts);
+  } else {
+    el.addEventListener(event, handler, false);
+  }
 }
 
-function parseLeaveTarget(now = new Date()){
-  const raw = normalizeDepartureTime(state?.leaveTimeSettings?.leaveTime || DEFAULT_DEPARTURE_TIME);
-  const [h, m] = raw.split(":").map(Number);
-  const target = new Date(now);
-  target.setHours(Number.isFinite(h) ? h : 7, Number.isFinite(m) ? m : 35, 0, 0);
-  return { raw, target };
+function getAudioContext(){
+  if (audioCtx) return audioCtx;
+  var Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  try {
+    audioCtx = new Ctx();
+  } catch(err){
+    audioCtx = null;
+  }
+  return audioCtx;
 }
 
-function formatSignedMinSec(totalSec){
-  const sign = totalSec >= 0 ? "+" : "-";
-  const safe = Math.abs(Math.floor(totalSec));
-  const mm = Math.floor(safe / 60);
-  const ss = safe % 60;
-  return `${sign}${pad2(mm)}:${pad2(ss)}`;
-}
-
-function renderLeaveStatus(now = new Date()){
-  if (!leaveBlockEl || !leaveTargetTimeEl || !leaveDeltaEl){
-    // Eski cache ile gelen HTML sürümü durumunda sayaç renderını güvenli şekilde atla.
+function unlockAudioContext(){
+  var ctx = getAudioContext();
+  if (!ctx) return;
+  if (ctx.state === "running"){
+    audioUnlocked = true;
+    setSoundHintVisible(false);
     return;
   }
-  const { raw, target } = parseLeaveTarget(now);
-  const beforeMin = Number(state?.leaveTimeSettings?.beforeMinutes ?? 10);
-  const afterMin = Number(state?.leaveTimeSettings?.afterMinutes ?? 10);
-  const diffSec = Math.floor((now.getTime() - target.getTime()) / 1000); // + ise gecikme
-  const beforeSec = beforeMin * 60;
-  const afterSec = afterMin * 60;
-  const withinWindow = diffSec >= -beforeSec && diffSec <= afterSec;
-
-  leaveTargetTimeEl.textContent = raw;
-  leaveBlockEl.classList.toggle("is-visible", withinWindow);
-
-  const deltaText = formatSignedMinSec(diffSec);
-  if (leaveDeltaEl.textContent !== deltaText){
-    leaveDeltaEl.textContent = deltaText;
-    leaveDeltaEl.classList.remove("tick");
-    void leaveDeltaEl.offsetWidth;
-    leaveDeltaEl.classList.add("tick");
-  }
-  leaveDeltaEl.classList.toggle("overdue", diffSec > 0);
-  renderLateMode(now, target);
+  if (!ctx.resume) return;
+  try {
+    var p = ctx.resume();
+    if (p && typeof p.then === "function"){
+      p.then(function(){
+        audioUnlocked = true;
+        setSoundHintVisible(false);
+      }, function(){});
+    }
+  } catch(err){}
 }
 
-function renderLateMode(now, target){
-  const enableLateMode = !!state?.leaveTimeSettings?.enableLateMode;
-  const isLate = now.getTime() > target.getTime();
-  document.body.classList.toggle("late-mode", enableLateMode && isLate);
+function playTone(freq, durationSec, gainLevel, type){
+  var ctx = getAudioContext();
+  if (!ctx || ctx.state !== "running") return;
+  try {
+    var t0 = ctx.currentTime;
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = type || "sine";
+    osc.frequency.value = Number(freq || 880);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(Number(gainLevel || 0.03), t0 + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + Number(durationSec || 0.08));
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + Number(durationSec || 0.08) + 0.02);
+  } catch(err){}
+}
+
+function maybePlayCountdownSound(second, targetKey){
+  if (!state.settings.soundEnabled) return;
+  if (!audioUnlocked){
+    showSoundHintIfNeeded();
+    return;
+  }
+  if (targetKey !== lastCountdownSoundTargetKey){
+    lastCountdownSoundTargetKey = targetKey;
+    lastCountdownSoundSecond = null;
+  }
+  if (lastCountdownSoundSecond === second) return;
+
+  if (second >= 1 && second <= 5){
+    playTone(880, 0.08, 0.03, "square");
+  } else if (second === 0){
+    playTone(760, 0.78, 0.04, "square");
+  } else {
+    return;
+  }
+  lastCountdownSoundSecond = second;
+}
+
+function setSoundHintVisible(visible){
+  if (!soundHintEl) return;
+  soundHintEl.hidden = !visible;
+}
+
+function showSoundHintIfNeeded(){
+  if (!state.settings.soundEnabled) return;
+  if (audioUnlocked) return;
+  if (soundHintShown) return;
+  soundHintShown = true;
+  setSoundHintVisible(true);
+  setTimeout(function(){ setSoundHintVisible(false); }, 5200);
+}
+
+function renderSoundToggle(){
+  var onState = !!(state.settings && state.settings.soundEnabled);
+  if (soundToggleBtn){
+    soundToggleBtn.textContent = onState ? "🔊" : "🔈";
+    soundToggleBtn.setAttribute("aria-pressed", onState ? "true" : "false");
+  }
+  if (soundEnabledToggle){
+    soundEnabledToggle.checked = onState;
+  }
+  if (!onState) setSoundHintVisible(false);
+}
+
+function parseLeaveTarget(now){
+  var d = now || new Date();
+  var raw = normalizeLeaveTime(state.leaveTimeSettings.leaveTime || DEFAULT_LEAVE_TIME);
+  var p = raw.split(":");
+  var h = Number(p[0]) || 0;
+  var m = Number(p[1]) || 0;
+  var t = new Date(d.getTime());
+  t.setHours(h, m, 0, 0);
+  return { raw: raw, target: t };
+}
+
+function showFullscreenCountdown(second){
+  if (!fullscreenCountdownEl || !fullscreenCountdownValueEl) return;
+  fullscreenCountdownValueEl.textContent = String(second);
+  fullscreenCountdownEl.hidden = false;
+}
+
+function hideFullscreenCountdown(){
+  if (!fullscreenCountdownEl) return;
+  fullscreenCountdownEl.hidden = true;
+  lastFullscreenSecond = null;
+}
+
+function setScreenSaverMode(enabled){
+  state.screenSaverMode = !!enabled;
+  if (!screenSaverLayerEl) return;
+  if (state.screenSaverMode){
+    screenSaverLayerEl.hidden = false;
+    screenSaverLayerEl.classList.add("is-visible");
+    document.body.classList.add("screen-saver-active");
+    screenSaverMinuteStamp = "";
+  } else {
+    screenSaverLayerEl.classList.remove("is-visible");
+    document.body.classList.remove("screen-saver-active");
+    dashboardReturningUntil = Date.now() + 260;
+    setTimeout(function(){
+      if (!state.screenSaverMode && screenSaverLayerEl) screenSaverLayerEl.hidden = true;
+    }, 240);
+  }
+}
+
+function buildScreenSaverWeatherLines(){
+  var payload = state.weatherCache && state.weatherCache.payload ? state.weatherCache.payload : null;
+  if (!payload){
+    return ["Sabah: veri yok", "Öğle: veri yok", "Gece: bulutlu/serin"];
+  }
+  var sky = String(payload.skyLabel || "bulutlu").toLowerCase();
+  var rain = String(payload.rainLabel || "yok").toLowerCase();
+  var minTemp = (typeof payload.minTemp === "number") ? payload.minTemp : null;
+
+  var morning = "Sabah: " + (rain.indexOf("var") > -1 ? "yağış ihtimali" : (sky.indexOf("güneş") > -1 || sky.indexOf("gunes") > -1 ? "açık" : sky));
+  var noon = "Öğle: " + (rain.indexOf("yüksek") > -1 || rain.indexOf("yuksek") > -1 ? "yağış ihtimali yüksek" : (rain.indexOf("var") > -1 ? "yağış ihtimali" : sky));
+  var night = "Gece: ";
+  if (minTemp != null && minTemp <= 8) night += "serin";
+  else if (sky.indexOf("açık") > -1 || sky.indexOf("acik") > -1) night += "açık";
+  else night += "bulutlu";
+
+  return [morning, noon, night];
+}
+
+function updateScreenSaverShift(d){
+  if (!screenSaverInfoEl) return;
+  var stamp = String(d.getFullYear()) + "-" + String(d.getMonth()) + "-" + String(d.getDate()) + "-" + String(d.getHours()) + "-" + String(d.getMinutes());
+  if (stamp === screenSaverMinuteStamp) return;
+  screenSaverMinuteStamp = stamp;
+  screenSaverShiftIndex = (screenSaverShiftIndex + 1) % screenSaverOffsets.length;
+  var off = screenSaverOffsets[screenSaverShiftIndex];
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches){
+    off = { x: 0, y: 0 };
+  }
+  screenSaverInfoEl.style.transform = "translate(" + off.x + "px," + off.y + "px)";
+}
+
+function updateScreenSaver(d){
+  if (!ssHhEl || !ssMmEl || !ssDateLineEl || !ssWeatherLinesEl) return;
+  ssHhEl.textContent = pad2(d.getHours());
+  ssMmEl.textContent = pad2(d.getMinutes());
+  ssDateLineEl.textContent = fmtTurkishDateLine(d);
+  ssWeatherLinesEl.innerHTML = "";
+  var lines = buildScreenSaverWeatherLines();
+  var i;
+  for (i = 0; i < lines.length; i++){
+    var li = document.createElement("li");
+    li.textContent = lines[i];
+    ssWeatherLinesEl.appendChild(li);
+  }
+  if (state.screenSaverMode) updateScreenSaverShift(d);
+}
+
+function registerInteraction(){
+  lastInteractionTimestamp = Date.now();
+  unlockAudioContext();
+  if (state.screenSaverMode){
+    setScreenSaverMode(false);
+  }
+}
+
+function applyIdleModeTick(nowTs){
+  var now = Number(nowTs || Date.now());
+  if (!state.settings.screenSaverEnabled) return;
+  if (isModalOpen) return;
+  if (state.screenSaverMode) return;
+  if (now < dashboardReturningUntil) return;
+  var timeoutMs = (Number(state.settings.screenSaverTimeoutMinutes) || 10) * 60 * 1000;
+  if ((now - lastInteractionTimestamp) >= timeoutMs){
+    setScreenSaverMode(true);
+  }
+}
+
+function renderLeaveStatus(now){
+  if (!leaveBlockEl || !leaveTargetTimeEl || !leaveDeltaEl) return;
+  var info = parseLeaveTarget(now);
+  var diffSec = Math.floor((now.getTime() - info.target.getTime()) / 1000); // after => positive
+  var beforeSec = (Number(state.leaveTimeSettings.beforeMinutes) || DEFAULT_BEFORE_MIN) * 60;
+  var afterSec = (Number(state.leaveTimeSettings.afterMinutes) || DEFAULT_AFTER_MIN) * 60;
+  var within = (diffSec >= -beforeSec && diffSec <= afterSec);
+
+  leaveTargetTimeEl.textContent = info.raw;
+  leaveBlockEl.classList.toggle("is-visible", within);
+  if (leaveOverlayEl) leaveOverlayEl.classList.toggle("is-visible", within);
+
+  if (within){
+    var targetKey = todayISO(now) + "|" + info.raw;
+    var absSec = Math.abs(diffSec);
+    var mm = pad2(Math.floor(absSec / 60));
+    var ss = pad2(absSec % 60);
+    var text = mm + ":" + ss;
+    if (lastLeaveDeltaText !== text){
+      leaveDeltaEl.textContent = text;
+      leaveDeltaEl.classList.remove("tick");
+      void leaveDeltaEl.offsetWidth;
+      leaveDeltaEl.classList.add("tick");
+      lastLeaveDeltaText = text;
+    }
+
+    var remain = -diffSec;
+    var blink = remain > 0 && remain <= 30;
+    leaveBlockEl.classList.toggle("is-blink", blink);
+
+    if (remain >= 0 && remain <= 10){
+      var secDisplay = Math.ceil(remain);
+      if (secDisplay < 0) secDisplay = 0;
+      if (secDisplay <= 5) maybePlayCountdownSound(secDisplay, targetKey);
+      if (lastFullscreenSecond !== secDisplay){
+        lastFullscreenSecond = secDisplay;
+        showFullscreenCountdown(secDisplay);
+      }
+      if (secDisplay === 0){
+        hideFullscreenCountdown();
+      }
+    } else {
+      hideFullscreenCountdown();
+    }
+  } else {
+    leaveBlockEl.classList.remove("is-blink");
+    if (leaveOverlayEl) leaveOverlayEl.classList.remove("is-visible");
+    hideFullscreenCountdown();
+    lastCountdownSoundSecond = null;
+    lastCountdownSoundTargetKey = "";
+  }
+
+  var late = now.getTime() > info.target.getTime();
+  var lateEnabled = state.leaveTimeSettings.enableLateMode !== false;
+  document.body.classList.toggle("late-mode", !!(late && lateEnabled));
+}
+
+function renderClock(){
+  var d = new Date();
+  if (hhEl) hhEl.textContent = pad2(d.getHours());
+  if (mmEl) mmEl.textContent = pad2(d.getMinutes());
+  if (dateLineEl) dateLineEl.textContent = fmtTurkishDateLine(d);
+  if (colonEl) colonEl.style.opacity = (d.getSeconds() % 2 === 0) ? "0.5" : "0.95";
+  updateScreenSaver(d);
+  renderLeaveStatus(d);
+  applyIdleModeTick(d.getTime());
 }
 
 function renderNet(){
-  const online = isOnline();
-  netDot.style.background = online ? "var(--good)" : "var(--bad)";
-  netText.textContent = online ? "Online" : "Offline";
+  var online = isOnline();
+  if (netDot) netDot.style.background = online ? "var(--good)" : "var(--bad)";
+  if (netText) netText.textContent = online ? "Online" : "Offline";
 }
 
-// ---------- Rendering Lists ----------
-function renderScheduleList(ul, items, onToggle){
-  ul.innerHTML = "";
-  if (!items || items.length === 0){
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "—";
-    ul.appendChild(li);
-    return;
-  }
+function applyTheme(){
+  document.documentElement.setAttribute("data-theme", state.settings.theme || "dark");
+}
 
-  for (const it of items.slice(0, 8)){
-    const li = document.createElement("li");
-    li.className = "checkItem" + (it.done ? " done" : "");
-    li.dataset.id = it.id;
-
-    const left = document.createElement("div");
-    left.className = "itemLeft";
-
-    const cb = document.createElement("div");
-    cb.className = "cb";
-    cb.innerHTML = "<span>✓</span>";
-
-    const txt = document.createElement("div");
-    txt.className = "itemText";
-    txt.textContent = it.text || "";
-
-    left.appendChild(cb);
-    left.appendChild(txt);
-
-    const meta = document.createElement("div");
-    meta.className = "itemMeta";
-    meta.textContent = (it.time && it.time.trim()) ? `${it.time} —` : "";
-
-    li.appendChild(left);
-    li.appendChild(meta);
-
-    // Touch/click: toggle
-    li.addEventListener("click", () => onToggle(it.id));
-    ul.appendChild(li);
-  }
+function toggleTheme(){
+  state.settings.theme = (state.settings.theme === "light") ? "dark" : "light";
+  saveState(state);
+  renderAll();
 }
 
 function renderMiniList(ul, items){
+  if (!ul) return;
   ul.innerHTML = "";
-  const slice = (items || []).slice(0, 3);
-  if (slice.length === 0){
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "—";
-    ul.appendChild(li);
+  var list = items || [];
+  if (!list.length){
+    var em = document.createElement("li");
+    em.className = "muted";
+    em.textContent = "—";
+    ul.appendChild(em);
     return;
   }
-  for (const it of slice){
-    const li = document.createElement("li");
-    const t = (it.time && it.time.trim()) ? `${it.time} — ` : "";
+  var i;
+  for (i = 0; i < Math.min(3, list.length); i++){
+    var it = list[i];
+    var li = document.createElement("li");
+    var t = (it.time && String(it.time).trim()) ? (it.time + " — ") : "";
     li.textContent = t + (it.text || "");
     ul.appendChild(li);
   }
 }
 
 function renderChecklist(ul, items, onToggle){
+  if (!ul) return;
   ul.innerHTML = "";
-  if (!items || items.length === 0){
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = "—";
-    ul.appendChild(li);
+  var list = items || [];
+  if (!list.length){
+    var em = document.createElement("li");
+    em.className = "muted";
+    em.textContent = "—";
+    ul.appendChild(em);
     return;
   }
+  var i;
+  for (i = 0; i < list.length; i++){
+    (function(it){
+      var li = document.createElement("li");
+      li.className = it.done ? "done" : "";
 
-  for (const it of items){
-    const li = document.createElement("li");
-    li.className = it.done ? "done" : "";
-    li.dataset.id = it.id;
+      var left = document.createElement("div");
+      left.className = "itemLeft";
 
-    const left = document.createElement("div");
-    left.className = "itemLeft";
+      var cb = document.createElement("div");
+      cb.className = "cb";
+      cb.innerHTML = "<span>✓</span>";
 
-    const cb = document.createElement("div");
-    cb.className = "cb";
-    cb.innerHTML = "<span>✓</span>";
+      var txt = document.createElement("div");
+      txt.className = "itemText";
+      txt.textContent = it.text || "";
 
-    const txt = document.createElement("div");
-    txt.className = "itemText";
-    txt.textContent = it.text || "";
+      left.appendChild(cb);
+      left.appendChild(txt);
+      li.appendChild(left);
 
-    left.appendChild(cb);
-    left.appendChild(txt);
+      var meta = document.createElement("div");
+      meta.className = "itemMeta";
+      meta.textContent = "";
+      li.appendChild(meta);
 
-    li.appendChild(left);
-    const spacer = document.createElement("div");
-    spacer.className = "itemMeta";
-    spacer.textContent = "";
-    li.appendChild(spacer);
-
-    li.addEventListener("click", () => onToggle(it.id));
-    ul.appendChild(li);
+      on(li, "click", function(){ onToggle(it.id); });
+      ul.appendChild(li);
+    })(list[i]);
   }
 }
 
-// ---------- Weather ----------
-function setWeatherUI(normalized, hintText){
-  if (!normalized){
-    wSky.textContent = "—";
-    wRain.textContent = "—";
-    wTemp.textContent = "—";
-    wWind.textContent = "—";
-    wTips.innerHTML = `<li class="muted">Hava verisi yok.</li>`;
-    wHint.textContent = hintText || "";
-    setWeatherVisual(null);
-    setWeatherIcon(null);
+function renderScheduleList(ul, items, onToggle){
+  if (!ul) return;
+  ul.innerHTML = "";
+  var list = items || [];
+  if (!list.length){
+    var em = document.createElement("li");
+    em.className = "muted";
+    em.textContent = "—";
+    ul.appendChild(em);
+    return;
+  }
+  var i;
+  for (i = 0; i < Math.min(8, list.length); i++){
+    (function(it){
+      var li = document.createElement("li");
+      li.className = "checkItem" + (it.done ? " done" : "");
+
+      var left = document.createElement("div");
+      left.className = "itemLeft";
+      var cb = document.createElement("div");
+      cb.className = "cb";
+      cb.innerHTML = "<span>✓</span>";
+      var txt = document.createElement("div");
+      txt.className = "itemText";
+      txt.textContent = it.text || "";
+
+      left.appendChild(cb);
+      left.appendChild(txt);
+      li.appendChild(left);
+
+      var meta = document.createElement("div");
+      meta.className = "itemMeta";
+      meta.textContent = (it.time && String(it.time).trim()) ? (it.time + " —") : "";
+      li.appendChild(meta);
+
+      on(li, "click", function(){ onToggle(it.id); });
+      ul.appendChild(li);
+    })(list[i]);
+  }
+}
+
+function isChecklistComplete(checklistArray){
+  var arr = checklistArray || [];
+  if (!arr.length) return false;
+  var i;
+  for (i = 0; i < arr.length; i++){
+    if (!arr[i].done) return false;
+  }
+  return true;
+}
+
+function getKidChecklistArray(kind){
+  var out = [];
+  var ex = state.exitChecklist || {};
+  var items = ex.items || [];
+  var doneMap = (kind === "ruzgar") ? (ex.ruzgarDone || {}) : (ex.bulutDone || {});
+  var i;
+  for (i = 0; i < items.length; i++){
+    out.push({ id: items[i].id, done: !!doneMap[items[i].id] });
+  }
+  return out;
+}
+
+function renderKidWishes(){
+  if (!ruzgarWish || !bulutWish) return;
+  var rzDone = isChecklistComplete(getKidChecklistArray("ruzgar"));
+  var blDone = isChecklistComplete(getKidChecklistArray("bulut"));
+  ruzgarWish.hidden = !rzDone;
+  bulutWish.hidden = !blDone;
+}
+
+function renderExitMatrix(){
+  if (!exitMatrixRows) return;
+  var ex = state.exitChecklist || {};
+  var items = ex.items || [];
+  var bMap = ex.bulutDone || {};
+  var rMap = ex.ruzgarDone || {};
+  exitMatrixRows.innerHTML = "";
+
+  if (!items.length){
+    var empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "Öğe yok";
+    exitMatrixRows.appendChild(empty);
     return;
   }
 
-  wSky.textContent = normalized.skyLabel || "—";
-  wRain.textContent = normalized.rainLabel || "—";
-  wTemp.textContent = (normalized.minTemp != null && normalized.maxTemp != null)
-    ? `${Math.round(normalized.minTemp)}–${Math.round(normalized.maxTemp)}°C`
-    : "—";
-  wWind.textContent = normalized.windLabel || "—";
+  var i;
+  for (i = 0; i < items.length; i++){
+    (function(it){
+      var bDone = !!bMap[it.id];
+      var rDone = !!rMap[it.id];
 
-  wTips.innerHTML = "";
-  const tips = Array.isArray(normalized.tips) ? normalized.tips.slice(0, 3) : [];
-  if (tips.length === 0){
-    wTips.innerHTML = `<li class="muted">—</li>`;
-  } else {
-    for (const t of tips){
-      const li = document.createElement("li");
-      li.textContent = t;
-      wTips.appendChild(li);
+      var row = document.createElement("div");
+      row.className = "matrixRow";
+
+      var left = document.createElement("div");
+      left.className = "matrixCell";
+      var bCb = document.createElement("button");
+      bCb.type = "button";
+      bCb.className = "matrixCb" + (bDone ? " is-checked" : "");
+      bCb.innerHTML = '<span class=\"matrixCbTick\">✓</span>';
+      on(bCb, "click", function(){ toggleKidDone("bulut", it.id); });
+      left.appendChild(bCb);
+
+      var center = document.createElement("div");
+      center.className = "matrixLabel";
+      center.innerHTML = '<span class="matrixLabelText">' + escapeHtml(it.text) + '</span>';
+      if (bDone || rDone){
+        center.style.opacity = "0.62";
+        center.style.textDecoration = "line-through";
+      } else {
+        center.style.opacity = "";
+        center.style.textDecoration = "";
+      }
+
+      var right = document.createElement("div");
+      right.className = "matrixCell";
+      var rCb = document.createElement("button");
+      rCb.type = "button";
+      rCb.className = "matrixCb" + (rDone ? " is-checked" : "");
+      rCb.innerHTML = '<span class=\"matrixCbTick\">✓</span>';
+      on(rCb, "click", function(){ toggleKidDone("ruzgar", it.id); });
+      right.appendChild(rCb);
+
+      row.appendChild(left);
+      row.appendChild(center);
+      row.appendChild(right);
+      exitMatrixRows.appendChild(row);
+    })(items[i]);
+  }
+}
+
+function renderNotes(){
+  if (!notesList) return;
+  notesList.innerHTML = "";
+  var items = state.notes && state.notes.items ? state.notes.items : [];
+  if (!items.length){
+    var empty = document.createElement("li");
+    empty.className = "muted";
+    empty.textContent = "—";
+    notesList.appendChild(empty);
+    return;
+  }
+  var i;
+  for (i = 0; i < items.length; i++){
+    (function(it){
+      var li = document.createElement("li");
+      li.className = "notesChecklistItem" + (it.done ? " is-done" : "");
+
+      var cb = document.createElement("button");
+      cb.type = "button";
+      cb.className = "matrixCb" + (it.done ? " is-checked" : "");
+      cb.innerHTML = '<span class=\"matrixCbTick\">✓</span>';
+      on(cb, "click", function(){ toggleNoteDone(it.id); });
+
+      var txt = document.createElement("span");
+      txt.className = "notesChecklistText";
+      txt.textContent = it.text || "";
+
+      li.appendChild(cb);
+      li.appendChild(txt);
+      notesList.appendChild(li);
+    })(items[i]);
+  }
+}
+
+function toggleTodayDone(id){
+  var i, list = state.today.schedule || [];
+  for (i = 0; i < list.length; i++){
+    if (list[i].id === id){
+      list[i].done = !list[i].done;
+      break;
     }
   }
-
-  wHint.textContent = hintText || "";
-  setWeatherVisual(normalized);
-  setWeatherIcon(normalized);
+  saveState(state);
+  renderAll();
 }
 
-function setWeatherIcon(normalized){
-  if (!wIcon) return;
-  const svg = pickWeatherIconSvg(normalized);
-  wIcon.innerHTML = svg;
+function toggleKidDone(kind, id){
+  var ex = state.exitChecklist || {};
+  var doneMap = (kind === "ruzgar") ? ex.ruzgarDone : ex.bulutDone;
+  if (!doneMap || !doneMap.hasOwnProperty(id)) doneMap[id] = false;
+  doneMap[id] = !doneMap[id];
+  saveState(state);
+  renderAll();
 }
 
-function pickWeatherIconSvg(normalized){
-  if (!normalized) return iconCloudy();
-  const sky = (normalized.skyLabel || "").toLowerCase();
-  const rain = (normalized.rainLabel || "").toLowerCase();
-  if (sky.includes("gök gürültülü")) return iconStorm();
-  if (rain.includes("var")) return iconRain();
-  if (sky.includes("az bulutlu") || sky.includes("parçalı")) return iconPartlyCloudy();
-  if (sky.includes("güneşli")) return iconSunny();
-  return iconCloudy();
-}
-
-function iconSunny(){
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.2" fill="currentColor" stroke="none"></circle><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"/></svg>`;
-}
-function iconPartlyCloudy(){
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="9" r="3.5" fill="currentColor" stroke="none"></circle><path d="M8 17h9a3 3 0 0 0 .1-6 4.5 4.5 0 0 0-8.8-1.2A3.3 3.3 0 0 0 8 17Z" fill="currentColor" stroke="none"/></svg>`;
-}
-function iconCloudy(){
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 17h11.2a3.2 3.2 0 0 0 .1-6.3 4.9 4.9 0 0 0-9.5-1.4A3.7 3.7 0 0 0 6 17Z" fill="currentColor" stroke="none"/></svg>`;
-}
-function iconRain(){
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 13h11a3 3 0 0 0 .1-6 4.5 4.5 0 0 0-8.8-1.1A3.4 3.4 0 0 0 6 13Z" fill="currentColor" stroke="none"/><path d="m8 15-1 3m5-3-1 3m5-3-1 3"/></svg>`;
-}
-function iconStorm(){
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 12h11a3 3 0 0 0 .1-6 4.5 4.5 0 0 0-8.8-1.1A3.4 3.4 0 0 0 6 12Z" fill="currentColor" stroke="none"/><path d="m11 13-2.2 4.2h2.5L10 21l4.2-5h-2.6l1.4-3Z"/></svg>`;
-}
-
-function setWeatherVisual(normalized){
-  if (!weatherVisual) return;
-  weatherVisual.classList.remove("weather-sun", "weather-rain", "weather-cloud", "weather-wind", "weather-unknown");
-  if (!normalized){
-    weatherVisual.classList.add("weather-unknown");
-    return;
+function toggleNoteDone(id){
+  var items = state.notes && state.notes.items ? state.notes.items : [];
+  var i;
+  for (i = 0; i < items.length; i++){
+    if (items[i].id === id){
+      items[i].done = !items[i].done;
+      break;
+    }
   }
-  const sky = (normalized.skyLabel || "").toLowerCase();
-  const rain = (normalized.rainLabel || "").toLowerCase();
-  const wind = (normalized.windLabel || "").toLowerCase();
+  saveState(state);
+  renderAll();
+}
 
-  if (rain.includes("var")){
-    weatherVisual.classList.add("weather-rain");
-    return;
+function resetExitDoneStates(){
+  var ex = state.exitChecklist || {};
+  var items = ex.items || [];
+  var i;
+  ex.bulutDone = {};
+  ex.ruzgarDone = {};
+  for (i = 0; i < items.length; i++){
+    ex.bulutDone[items[i].id] = false;
+    ex.ruzgarDone[items[i].id] = false;
   }
-  if (wind.includes("kuvvetli")){
-    weatherVisual.classList.add("weather-wind");
-    return;
+  ex.lastResetDate = todayISO(new Date());
+}
+
+function resetNotesDoneStates(){
+  var n = state.notes || {};
+  var items = n.items || [];
+  var i;
+  for (i = 0; i < items.length; i++) items[i].done = false;
+  n.lastResetDate = todayISO(new Date());
+}
+
+function maybeRollover(){
+  var nowDate = todayISO(new Date());
+  var ex = state.exitChecklist || {};
+  var n = state.notes || {};
+  var changed = false;
+  if (ex.lastResetDate !== nowDate){
+    resetExitDoneStates();
+    changed = true;
   }
-  if (sky.includes("güneşli") || sky.includes("az bulutlu")){
-    weatherVisual.classList.add("weather-sun");
-    return;
+  if (n.lastResetDate !== nowDate){
+    resetNotesDoneStates();
+    changed = true;
   }
-  if (sky.includes("bulut") || sky.includes("sis")){
-    weatherVisual.classList.add("weather-cloud");
-    return;
+  if (changed){
+    saveState(state);
   }
-  weatherVisual.classList.add("weather-unknown");
+}
+
+function clearDoneInToday(){
+  var src = state.today.schedule || [];
+  var dst = [];
+  var i;
+  for (i = 0; i < src.length; i++) if (!src[i].done) dst.push(src[i]);
+  state.today.schedule = dst;
+  saveState(state);
+  renderAll();
 }
 
 function updateLastWeatherLine(){
-  const ts = state?.weatherCache?.fetchedAt || 0;
+  if (!lastWeatherEl) return;
+  var ts = state.weatherCache && state.weatherCache.fetchedAt ? state.weatherCache.fetchedAt : 0;
   if (!ts){
     lastWeatherEl.textContent = "Hava: —";
     return;
   }
-  const d = new Date(ts);
-  lastWeatherEl.textContent = `Hava: ${fmtTimeHM(d)}`;
+  lastWeatherEl.textContent = "Hava: " + fmtTimeHM(new Date(ts));
 }
 
-function normalizeWeather(payload){
-  /**
-   * Normalization contract:
-   * - skyLabel
-   * - rainLabel (var/yok + düşük/orta/yüksek)
-   * - minTemp, maxTemp
-   * - windLabel (hafif/orta/kuvvetli)
-   * - tips[] (2-3)
-   *
-   * payload iki tip olabilir:
-   * 1) Zaten normalized gibi: { skyLabel, rainLabel, ... }
-   * 2) Open-Meteo raw response
-   */
+function weatherIconSvg(type){
+  if (type === "sunny") return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4.2" fill="currentColor" stroke="none"></circle><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"/></svg>';
+  if (type === "partly") return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="9" r="3.5" fill="currentColor" stroke="none"></circle><path d="M8 17h9a3 3 0 0 0 .1-6 4.5 4.5 0 0 0-8.8-1.2A3.3 3.3 0 0 0 8 17Z" fill="currentColor" stroke="none"/></svg>';
+  if (type === "rain") return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 13h11a3 3 0 0 0 .1-6 4.5 4.5 0 0 0-8.8-1.1A3.4 3.4 0 0 0 6 13Z" fill="currentColor" stroke="none"/><path d="m8 15-1 3m5-3-1 3m5-3-1 3"/></svg>';
+  if (type === "storm") return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 12h11a3 3 0 0 0 .1-6 4.5 4.5 0 0 0-8.8-1.1A3.4 3.4 0 0 0 6 12Z" fill="currentColor" stroke="none"/><path d="m11 13-2.2 4.2h2.5L10 21l4.2-5h-2.6l1.4-3Z"/></svg>';
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 17h11.2a3.2 3.2 0 0 0 .1-6.3 4.9 4.9 0 0 0-9.5-1.4A3.7 3.7 0 0 0 6 17Z" fill="currentColor" stroke="none"/></svg>';
+}
 
-  if (!payload || typeof payload !== "object") return null;
+function pickWallpaper(normalized){
+  if (!normalized) return "bulutlu.png";
+  var sky = String(normalized.skyLabel || "").toLowerCase();
+  var rain = String(normalized.rainLabel || "").toLowerCase();
+  var wind = String(normalized.windLabel || "").toLowerCase();
+  var minT = (typeof normalized.minTemp === "number") ? normalized.minTemp : null;
+  var maxT = (typeof normalized.maxTemp === "number") ? normalized.maxTemp : null;
 
-  // Already normalized?
-  if (typeof payload.skyLabel === "string" && typeof payload.rainLabel === "string"){
-    const out = {
-      skyLabel: payload.skyLabel,
-      rainLabel: payload.rainLabel,
-      minTemp: payload.minTemp ?? null,
-      maxTemp: payload.maxTemp ?? null,
-      windLabel: payload.windLabel ?? "—",
-      tips: Array.isArray(payload.tips) ? payload.tips : []
-    };
-    // tips boşsa üretebiliriz
-    if (!out.tips || out.tips.length === 0){
-      out.tips = buildTips(out);
-    }
-    return out;
+  if (sky.indexOf("gök") > -1 || sky.indexOf("fırt") > -1 || sky.indexOf("firt") > -1) return "firtina.png";
+  if ((minT != null && minT <= 6) || (maxT != null && maxT <= 10)) return "soguk.png";
+  if (wind.indexOf("kuvvet") > -1) return "ruzgarli.png";
+
+  if (rain.indexOf("var") > -1){
+    if (rain.indexOf("yüksek") > -1 || rain.indexOf("yuksek") > -1) return "Yagisli.png";
+    return "az_yagisli.png";
   }
 
-  // Open-Meteo raw
-  // Beklenen: daily.temperature_2m_min[0], daily.temperature_2m_max[0],
-  // daily.precipitation_probability_max[0], daily.windspeed_10m_max[0], daily.weathercode[0]
-  const daily = payload.daily;
-  if (!daily) return null;
+  if (sky.indexOf("güneşli") > -1 || sky.indexOf("gunesli") > -1 || sky.indexOf("açık") > -1 || sky.indexOf("acik") > -1) return "Gunesli.png";
+  if (sky.indexOf("az bulut") > -1 || sky.indexOf("parçalı") > -1 || sky.indexOf("parcali") > -1) return "az_bulutlu.png";
+  if (sky.indexOf("bulut") > -1 || sky.indexOf("kapalı") > -1 || sky.indexOf("kapali") > -1) return "bulutlu.png";
 
-  const minTemp = numOrNull(daily.temperature_2m_min?.[0]);
-  const maxTemp = numOrNull(daily.temperature_2m_max?.[0]);
-  const pop = numOrNull(daily.precipitation_probability_max?.[0]); // 0..100
-  const wind = numOrNull(daily.windspeed_10m_max?.[0]); // km/h
-  const code = numOrNull(daily.weathercode?.[0]);
+  return "bulutlu.png";
+}
 
-  const skyLabel = skyFromOpenMeteoCode(code);
-  const { rainLabel, rainLevel } = rainFromPop(pop, code);
-  const windLabel = windLabelFromSpeed(wind);
+function applyWallpaper(filename){
+  if (!bgEl) return;
+  wallpaperLoadToken += 1;
+  var token = wallpaperLoadToken;
+  if (!filename){
+    bgEl.style.backgroundImage = "none";
+    return;
+  }
+  var src = "./weather/" + filename;
+  var img = new Image();
+  img.onload = function(){
+    if (token !== wallpaperLoadToken) return;
+    bgEl.style.backgroundImage = "url('" + src + "')";
+  };
+  img.onerror = function(){
+    if (token !== wallpaperLoadToken) return;
+    bgEl.style.backgroundImage = "none";
+  };
+  img.src = src;
+}
 
-  const out = { skyLabel, rainLabel, minTemp, maxTemp, windLabel, tips: [] };
-  out.tips = buildTips(out, { rainLevel });
-  return out;
+function setWeatherUI(normalized, hintText){
+  if (!normalized){
+    if (wSky) wSky.textContent = "—";
+    if (wRain) wRain.textContent = "—";
+    if (wTemp) wTemp.textContent = "—";
+    if (wWind) wWind.textContent = "—";
+    if (wTips) wTips.innerHTML = '<li class="muted">Hava verisi yok.</li>';
+    if (wHint) wHint.textContent = hintText || "";
+    if (wIcon) wIcon.innerHTML = weatherIconSvg("cloudy");
+    applyWallpaper(null);
+    return;
+  }
+
+  if (wSky) wSky.textContent = normalized.skyLabel || "—";
+  if (wRain) wRain.textContent = normalized.rainLabel || "—";
+  if (wTemp){
+    if (normalized.minTemp != null && normalized.maxTemp != null){
+      wTemp.textContent = String(Math.round(normalized.minTemp)) + "–" + String(Math.round(normalized.maxTemp)) + "°C";
+    } else {
+      wTemp.textContent = "—";
+    }
+  }
+  if (wWind) wWind.textContent = normalized.windLabel || "—";
+
+  if (wTips){
+    wTips.innerHTML = "";
+    var tips = normalized.tips && Object.prototype.toString.call(normalized.tips) === "[object Array]" ? normalized.tips : [];
+    var i;
+    if (!tips.length){
+      wTips.innerHTML = '<li class="muted">—</li>';
+    } else {
+      for (i = 0; i < Math.min(3, tips.length); i++){
+        var li = document.createElement("li");
+        li.textContent = String(tips[i]);
+        wTips.appendChild(li);
+      }
+    }
+  }
+
+  if (wHint) wHint.textContent = hintText || "";
+
+  var iconType = "cloudy";
+  var sky = String(normalized.skyLabel || "").toLowerCase();
+  var rain = String(normalized.rainLabel || "").toLowerCase();
+  if (sky.indexOf("gök") > -1 || sky.indexOf("fırt") > -1 || sky.indexOf("firt") > -1) iconType = "storm";
+  else if (rain.indexOf("var") > -1) iconType = "rain";
+  else if (sky.indexOf("az bulut") > -1 || sky.indexOf("parçalı") > -1 || sky.indexOf("parcali") > -1) iconType = "partly";
+  else if (sky.indexOf("güneş") > -1 || sky.indexOf("gunes") > -1) iconType = "sunny";
+
+  if (wIcon) wIcon.innerHTML = weatherIconSvg(iconType);
+  applyWallpaper(pickWallpaper(normalized));
 }
 
 function numOrNull(v){
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  var n = Number(v);
+  return isFinite(n) ? n : null;
 }
 
-function skyFromOpenMeteoCode(code){
-  // Open-Meteo weathercode mapping (özet)
-  // 0 Clear, 1-3 mainly clear/partly cloudy/overcast
-  // 45-48 fog, 51-57 drizzle, 61-67 rain, 71-77 snow, 80-82 rain showers, 95-99 thunderstorm
+function skyFromCode(code){
   if (code == null) return "—";
   if (code === 0) return "Güneşli";
   if (code >= 1 && code <= 2) return "Az bulutlu";
@@ -789,24 +1439,6 @@ function skyFromOpenMeteoCode(code){
   return "Parçalı bulutlu";
 }
 
-function rainFromPop(pop, code){
-  // Yağış var/yok + düşük/orta/yüksek
-  // pop yoksa koda göre sezdir
-  let p = pop;
-  if (p == null){
-    // code yağışlı gruplara giriyorsa "orta"
-    if (code != null && (code >= 51 && code <= 67 || code >= 80 && code <= 82 || code >= 95)){
-      p = 60;
-    } else {
-      p = 10;
-    }
-  }
-  const level = (p >= 65) ? "yüksek" : (p >= 35) ? "orta" : "düşük";
-  const has = p >= 20 || (code != null && (code >= 51 && code <= 67 || code >= 80 && code <= 82 || code >= 95));
-  const rainLabel = has ? `Var (ihtimal: ${level})` : `Yok (ihtimal: ${level})`;
-  return { rainLabel, rainLevel: level, hasRain: has };
-}
-
 function windLabelFromSpeed(kmh){
   if (kmh == null) return "—";
   if (kmh < 18) return "Hafif";
@@ -814,265 +1446,202 @@ function windLabelFromSpeed(kmh){
   return "Kuvvetli";
 }
 
-function buildTips(norm, extra = {}){
-  const tips = [];
+function rainFromPop(pop, code){
+  var p = pop;
+  if (p == null){
+    if (code != null && ((code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code >= 95)) p = 60;
+    else p = 10;
+  }
+  var level = (p >= 65) ? "yüksek" : (p >= 35 ? "orta" : "düşük");
+  var has = (p >= 20) || (code != null && ((code >= 51 && code <= 67) || (code >= 80 && code <= 82) || code >= 95));
+  return {
+    hasRain: has,
+    rainLevel: level,
+    rainLabel: has ? ("Var (ihtimal: " + level + ")") : ("Yok (ihtimal: " + level + ")")
+  };
+}
 
-  // Rain tips
-  const rainText = (norm.rainLabel || "").toLowerCase();
-  const hasRain = rainText.includes("var");
-  const rainLevel = extra.rainLevel || (rainText.includes("yüksek") ? "yüksek" : rainText.includes("orta") ? "orta" : "düşük");
+function buildTips(norm, extra){
+  var tips = [];
+  var rainText = String(norm.rainLabel || "").toLowerCase();
+  var hasRain = rainText.indexOf("var") > -1;
+  var rainLevel = (extra && extra.rainLevel) ? extra.rainLevel : (rainText.indexOf("yüksek") > -1 ? "yüksek" : (rainText.indexOf("orta") > -1 ? "orta" : "düşük"));
 
   if (hasRain){
-    tips.push(rainLevel === "yüksek" ? "Kapüşonlu mont tercih et, suya dayanıklı ayakkabı seç." : "Kapüşonlu ince mont tercih etmek rahat olur.");
+    if (rainLevel === "yüksek") tips.push("Kapüşonlu mont tercih et, suya dayanıklı ayakkabı seç.");
+    else tips.push("Kapüşonlu ince mont tercih etmek rahat olur.");
   } else {
     tips.push("Yağış beklenmiyor: hızlı çıkış için ideal.");
   }
 
-  // Temperature tips
-  const minT = norm.minTemp;
-  const maxT = norm.maxTemp;
-  if (minT != null && minT <= 8){
-    tips.push("Sabah serin: mont/kalın üst iyi olur.");
-  } else if (maxT != null && maxT >= 27){
-    tips.push("Sıcak: su + açık renk kıyafet önerilir.");
-  } else if (minT != null && maxT != null && (maxT - minT) >= 10){
-    tips.push("Gün içi fark yüksek: katmanlı giyin.");
-  }
+  if (norm.minTemp != null && norm.minTemp <= 8) tips.push("Sabah serin: mont/kalın üst iyi olur.");
+  else if (norm.maxTemp != null && norm.maxTemp >= 27) tips.push("Sıcak: su + açık renk kıyafet önerilir.");
+  else if (norm.minTemp != null && norm.maxTemp != null && (norm.maxTemp - norm.minTemp) >= 10) tips.push("Gün içi fark yüksek: katmanlı giyin.");
 
-  // Sky tips
-  const sky = (norm.skyLabel || "").toLowerCase();
-  if (sky.includes("güneşli") || sky.includes("az bulutlu")){
-    tips.push("Güneş gözlüğü işe yarar.");
-  }
+  var sky = String(norm.skyLabel || "").toLowerCase();
+  if (sky.indexOf("güneş") > -1 || sky.indexOf("gunes") > -1 || sky.indexOf("az bulut") > -1) tips.push("Güneş gözlüğü işe yarar.");
 
-  // Wind tips
-  const wind = (norm.windLabel || "").toLowerCase();
-  if (wind.includes("kuvvetli")){
-    tips.push("Rüzgar kuvvetli: hafif eşyaları sabitle.");
-  }
+  var wind = String(norm.windLabel || "").toLowerCase();
+  if (wind.indexOf("kuvvet") > -1) tips.push("Rüzgar kuvvetli: hafif eşyaları sabitle.");
 
-  // 2-3 arası tut
-  // Öncelik: yağış, sıcaklık, güneş
-  const uniq = [];
-  for (const t of tips){
-    if (!uniq.includes(t)) uniq.push(t);
-  }
+  var uniq = [];
+  var i;
+  for (i = 0; i < tips.length; i++) if (uniq.indexOf(tips[i]) === -1) uniq.push(tips[i]);
   return uniq.slice(0, 3);
 }
 
-async function fetchWeather(){
-  const online = isOnline();
-  renderNet();
+function normalizeWeather(payload){
+  if (!payload || typeof payload !== "object") return null;
 
-  if (!online){
-    // Offline: cache göster
-    const cached = state?.weatherCache?.payload || null;
+  if (typeof payload.skyLabel === "string" && typeof payload.rainLabel === "string"){
+    var outReady = {
+      skyLabel: payload.skyLabel,
+      rainLabel: payload.rainLabel,
+      minTemp: payload.minTemp != null ? Number(payload.minTemp) : null,
+      maxTemp: payload.maxTemp != null ? Number(payload.maxTemp) : null,
+      windLabel: payload.windLabel || "—",
+      tips: (payload.tips && Object.prototype.toString.call(payload.tips) === "[object Array]") ? payload.tips : []
+    };
+    if (!outReady.tips.length) outReady.tips = buildTips(outReady, {});
+    return outReady;
+  }
+
+  if (!payload.daily) return null;
+  var daily = payload.daily;
+  var minTemp = numOrNull(daily.temperature_2m_min && daily.temperature_2m_min[0]);
+  var maxTemp = numOrNull(daily.temperature_2m_max && daily.temperature_2m_max[0]);
+  var pop = numOrNull(daily.precipitation_probability_max && daily.precipitation_probability_max[0]);
+  var wind = numOrNull(daily.windspeed_10m_max && daily.windspeed_10m_max[0]);
+  var code = numOrNull(daily.weathercode && daily.weathercode[0]);
+
+  var rf = rainFromPop(pop, code);
+  var out = {
+    skyLabel: skyFromCode(code),
+    rainLabel: rf.rainLabel,
+    minTemp: minTemp,
+    maxTemp: maxTemp,
+    windLabel: windLabelFromSpeed(wind),
+    tips: []
+  };
+  out.tips = buildTips(out, { rainLevel: rf.rainLevel });
+  return out;
+}
+
+function fetchJsonWithTimeout(url, timeoutMs){
+  timeoutMs = timeoutMs || FETCH_TIMEOUT_MS;
+  if (typeof AbortController === "undefined"){
+    return fetch(url, { cache: "no-store" }).then(function(res){
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    });
+  }
+
+  var ctrl = new AbortController();
+  var timer = setTimeout(function(){
+    try { ctrl.abort(); } catch(e) {}
+  }, timeoutMs);
+
+  return fetch(url, { cache: "no-store", signal: ctrl.signal }).then(function(res){
+    clearTimeout(timer);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res.json();
+  }, function(err){
+    clearTimeout(timer);
+    throw err;
+  });
+}
+
+function openMeteoUrl(){
+  var qs = "latitude=" + encodeURIComponent(String(IZMIR.lat)) +
+    "&longitude=" + encodeURIComponent(String(IZMIR.lon)) +
+    "&daily=" + encodeURIComponent("weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,windspeed_10m_max") +
+    "&timezone=" + encodeURIComponent(IZMIR.tz);
+  return "https://api.open-meteo.com/v1/forecast?" + qs;
+}
+
+function fetchWeather(){
+  renderNet();
+  if (state.screenSaverMode){
+    var cachedWhileSaver = state.weatherCache ? state.weatherCache.payload : null;
+    setWeatherUI(cachedWhileSaver, "Screen Saver: son kayıt");
+    updateLastWeatherLine();
+    return Promise.resolve();
+  }
+
+  if (!isOnline()){
+    var cached = state.weatherCache ? state.weatherCache.payload : null;
     setWeatherUI(cached, "Offline: son kayıt gösteriliyor.");
     updateLastWeatherLine();
-    return;
+    return Promise.resolve();
   }
 
-  // Online: 1) Worker endpoint dene 2) Open-Meteo fallback
-  const endpoint = (state?.settings?.weatherEndpoint || WEATHER_ENDPOINT || "").trim();
+  var endpoint = String(state.settings.weatherEndpoint || WEATHER_ENDPOINT_FALLBACK || "").trim();
+  var normalized = null;
+  var fetchedAt = 0;
+  var hint = "";
 
-  let normalized = null;
-  let fetchedAt = 0;
-  let hint = "";
+  var p = Promise.resolve();
 
-  if (endpoint && endpoint.startsWith("http")){
-    try {
-      const data = await fetchJsonWithTimeout(endpoint);
-      normalized = normalizeWeather(data);
-      if (!normalized) throw new Error("Normalize failed (endpoint payload)");
-      fetchedAt = nowTs();
-      hint = "Hava: endpoint";
-    } catch (e){
-      console.warn("Weather endpoint failed:", e);
-      hint = "Endpoint başarısız. Fallback deneniyor…";
-    }
-  } else {
-    hint = "Endpoint yok. Fallback deneniyor…";
+  if (endpoint && endpoint.indexOf("http") === 0){
+    p = p.then(function(){
+      return fetchJsonWithTimeout(endpoint, FETCH_TIMEOUT_MS).then(function(data){
+        normalized = normalizeWeather(data);
+        if (!normalized) throw new Error("Normalize failed endpoint");
+        fetchedAt = Date.now();
+        hint = "Hava: endpoint";
+      }, function(err){
+        hint = "Endpoint başarısız. Fallback deneniyor…";
+        return Promise.resolve(err);
+      });
+    });
   }
 
-  if (!normalized){
-    try {
-      const url = openMeteoUrl();
-      const data = await fetchJsonWithTimeout(url);
+  return p.then(function(){
+    if (normalized) return null;
+    return fetchJsonWithTimeout(openMeteoUrl(), FETCH_TIMEOUT_MS).then(function(data){
       normalized = normalizeWeather(data);
-      if (!normalized) throw new Error("Normalize failed (open-meteo payload)");
-      fetchedAt = nowTs();
+      if (!normalized) throw new Error("Normalize failed open-meteo");
+      fetchedAt = Date.now();
       hint = "Hava: Open-Meteo";
-    } catch (e){
-      console.warn("Open-Meteo failed:", e);
-      // Sessizce cache göster
-      const cached = state?.weatherCache?.payload || null;
+    }, function(){
+      var cached = state.weatherCache ? state.weatherCache.payload : null;
       if (cached){
         setWeatherUI(cached, "Hava güncellenemedi, son veri gösteriliyor.");
         updateLastWeatherLine();
       } else {
         setWeatherUI(null, "Hava alınamadı.");
       }
-      return;
-    }
-  }
-
-  // Başarılı: cache yaz
-  state.weatherCache = { fetchedAt, payload: normalized };
-  saveState(state);
-
-  setWeatherUI(normalized, hint);
-  updateLastWeatherLine();
-}
-
-function openMeteoUrl(){
-  const params = new URLSearchParams({
-    latitude: String(IZMIR.lat),
-    longitude: String(IZMIR.lon),
-    daily: "weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max,windspeed_10m_max",
-    timezone: IZMIR.tz
-  });
-  return `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
-}
-
-// ---------- Day rollover / auto-clear ----------
-function maybeRollover(){
-  const tISO = todayISO(new Date());
-
-  // Eğer gün değiştiyse: today -> archive mantığı yok; sadece date'leri güncelle
-  if (state.today.date !== tISO){
-    // "tomorrow"u bugüne taşı
-    const newToday = {
-      date: tISO,
-      schedule: (state.tomorrow?.schedule || []).map(x => ({...x, done:false}))
-    };
-
-    // yeni yarın
-    const newTomorrow = {
-      date: shiftISO(tISO, 1),
-      schedule: []
-    };
-
-    state.today = newToday;
-    state.tomorrow = newTomorrow;
+      return null;
+    });
+  }).then(function(){
+    if (!normalized) return;
+    state.weatherCache = { fetchedAt: fetchedAt, payload: normalized };
     saveState(state);
-  }
-
-  // gece otomatik temizleme: 03:00 civarı done temizle (basit)
-  if (state.settings.autoClearDoneAtNight){
-    const hr = new Date().getHours();
-    if (hr === 3){
-      // yalnızca bir kez çalıştırmak için: bu saat içinde bir flag atabiliriz (basit tutuldu)
-      clearDoneInToday();
-    }
-  }
-}
-
-function clearDoneInToday(){
-  state.today.schedule = (state.today.schedule || []).filter(it => !it.done);
-  saveState(state);
-  renderAll();
-}
-
-// ---------- UI render ----------
-function renderAll(){
-  normalizeState(state);
-  applyTheme();
-  renderClock();
-  renderNet();
-  updateLastWeatherLine();
-
-  renderScheduleList(todayList, state.today.schedule, (id) => {
-    toggleTodayDone(id);
+    setWeatherUI(normalized, hint);
+    updateLastWeatherLine();
   });
-
-  renderMiniList(tomorrowList, state.tomorrow.schedule);
-
-  if (notesBox) notesBox.textContent = state.persistentNotes || "—";
-
-  if (ruzgarExitList){
-    renderChecklist(ruzgarExitList, state.ruzgarChecklist, (id) => {
-      toggleExitDone("ruzgar", id);
-    });
-  }
-  if (bulutExitList){
-    renderChecklist(bulutExitList, state.bulutChecklist, (id) => {
-      toggleExitDone("bulut", id);
-    });
-  }
-  renderKidWishes();
-
-  autoClearToggle.checked = !!state.settings.autoClearDoneAtNight;
-  pixelShiftToggle.checked = !!state.settings.pixelShift;
-
-  modeChip.textContent = state.settings.theme === "light" ? "Aydınlık" : "Karanlık";
 }
-
-function toggleTodayDone(id){
-  const it = (state.today.schedule || []).find(x => x.id === id);
-  if (!it) return;
-  it.done = !it.done;
-  saveState(state);
-  renderAll();
-}
-
-function toggleExitDone(group, id){
-  normalizeState(state);
-  const list = group === "ruzgar" ? state.ruzgarChecklist : state.bulutChecklist;
-  const it = list.find(x => x.id === id);
-  if (!it) return;
-  it.done = !it.done;
-  saveState(state);
-  renderAll();
-}
-
-function renderKidWishes(){
-  if (!ruzgarWish || !bulutWish) return;
-  const ruzgarDone = (state.ruzgarChecklist || []).length > 0 && state.ruzgarChecklist.every((it) => !!it.done);
-  const bulutDone = (state.bulutChecklist || []).length > 0 && state.bulutChecklist.every((it) => !!it.done);
-  ruzgarWish.hidden = !(ruzgarDone || bulutDone);
-  bulutWish.hidden = !bulutDone;
-}
-
-// ---------- Theme / Pixel shift ----------
-function applyTheme(){
-  const theme = state?.settings?.theme || "dark";
-  document.documentElement.setAttribute("data-theme", theme);
-}
-
-function toggleTheme(){
-  state.settings.theme = (state.settings.theme === "light") ? "dark" : "light";
-  saveState(state);
-  renderAll();
-}
-
-let pixelShiftTimer = null;
-let pixelShiftPhase = 0;
-let isModalOpen = false;
 
 function applyPixelShiftEnabled(enabled){
-  const canShift = enabled && !isModalOpen;
-  if (pixelShiftTimer) {
+  var canShift = enabled && !isModalOpen;
+  if (pixelShiftTimer){
     clearInterval(pixelShiftTimer);
     pixelShiftTimer = null;
   }
-  if (!canShift) {
+  if (!pixelShiftWrap) return;
+  if (!canShift){
     pixelShiftWrap.style.transform = "translate(0px,0px)";
     return;
   }
-
-  pixelShiftTimer = setInterval(() => {
-    // 1-2px hafif kaydırma
+  pixelShiftTimer = setInterval(function(){
     pixelShiftPhase = (pixelShiftPhase + 1) % 4;
-    const dx = (pixelShiftPhase % 2 === 0) ? 1 : -1;
-    const dy = (pixelShiftPhase < 2) ? 1 : -1;
-    pixelShiftWrap.style.transform = `translate(${dx}px, ${dy}px)`;
+    var dx = (pixelShiftPhase % 2 === 0) ? 1 : -1;
+    var dy = (pixelShiftPhase < 2) ? 1 : -1;
+    pixelShiftWrap.style.transform = "translate(" + dx + "px," + dy + "px)";
   }, PIXEL_SHIFT_MS);
 }
 
-// ---------- Modal ----------
 function ensureModalTopLayer(){
-  // iOS Safari'de fixed modal, transform'lu bir wrapper ile aynı stacking ortamına
-  // girdiğinde touch hedeflemesi bozulabiliyor. Bu nedenle backdrop'u doğrudan body'de tutuyoruz.
   if (modalBackdrop && modalBackdrop.parentElement !== document.body){
     document.body.appendChild(modalBackdrop);
   }
@@ -1084,247 +1653,206 @@ function setModalOpen(nextOpen){
   applyPixelShiftEnabled(!!state.settings.pixelShift);
 }
 
-function openModal(){
-  if (!modalBackdrop || !endpointInput || !notesInput || !departureTimeInput){
-    console.warn("Modal elements missing; likely stale cached HTML.");
-    return;
-  }
-  normalizeState(state);
-  endpointInput.value = state.settings.weatherEndpoint || "";
-  notesInput.value = state.persistentNotes || "";
-  departureTimeInput.value = state.leaveTimeSettings.leaveTime || DEFAULT_DEPARTURE_TIME;
-  beforeMinutesInput.value = String(state.leaveTimeSettings.beforeMinutes ?? 10);
-  afterMinutesInput.value = String(state.leaveTimeSettings.afterMinutes ?? 10);
-  enableLateModeToggle.checked = !!state.leaveTimeSettings.enableLateMode;
-  pixelShiftToggle.checked = !!state.settings.pixelShift;
-
-  renderEditLists();
-
-  modalBackdrop.hidden = false;
-  setModalOpen(true);
-  // Fokus
-  setTimeout(() => endpointInput.focus(), 50);
-}
-
-function closeModal(){
-  if (!modalBackdrop) return;
-  modalBackdrop.hidden = true;
-  setModalOpen(false);
-  importActions.hidden = true;
-  importHint.textContent = "";
-  importStaged = null;
-}
-
-function renderEditLists(){
-  if (!editTodayList || !editTomList || !editRuzgarExitList || !editBulutExitList) return;
-  normalizeState(state);
-  // Today editor list
-  editTodayList.innerHTML = "";
-  for (const it of (state.today.schedule || []).slice(0, 20)){
-    editTodayList.appendChild(makeEditRow(it, "today"));
-  }
-
-  // Tomorrow editor list
-  editTomList.innerHTML = "";
-  for (const it of (state.tomorrow.schedule || []).slice(0, 20)){
-    editTomList.appendChild(makeEditRow(it, "tomorrow"));
-  }
-
-  // Exit checklist editors
-  editRuzgarExitList.innerHTML = "";
-  for (const it of (state.ruzgarChecklist || []).slice(0, 40)){
-    editRuzgarExitList.appendChild(makeEditRow(it, "exit-ruzgar"));
-  }
-  editBulutExitList.innerHTML = "";
-  for (const it of (state.bulutChecklist || []).slice(0, 40)){
-    editBulutExitList.appendChild(makeEditRow(it, "exit-bulut"));
-  }
-}
-
 function makeEditRow(item, kind){
-  const li = document.createElement("li");
+  var li = document.createElement("li");
   li.className = "editItem";
 
-  const time = document.createElement("input");
-  time.type = "text";
-  time.placeholder = "Saat";
-  time.value = item.time || "";
-  time.disabled = kind.startsWith("exit");
-  time.addEventListener("input", () => {
-    item.time = time.value;
-  });
-
-  const text = document.createElement("input");
+  var text = document.createElement("input");
   text.type = "text";
-  text.placeholder = "Metin";
+  text.placeholder = "Öğe";
   text.value = item.text || "";
-  text.addEventListener("input", () => {
-    item.text = text.value;
-  });
+  on(text, "input", function(){ item.text = String(text.value || ""); });
 
-  const del = document.createElement("button");
+  var del = document.createElement("button");
   del.type = "button";
   del.className = "delBtn";
   del.textContent = "Sil";
-  del.addEventListener("click", () => {
-    if (kind === "today"){
-      state.today.schedule = (state.today.schedule || []).filter(x => x.id !== item.id);
-    } else if (kind === "tomorrow"){
-      state.tomorrow.schedule = (state.tomorrow.schedule || []).filter(x => x.id !== item.id);
-    } else if (kind === "exit-ruzgar"){
-      state.ruzgarChecklist = (state.ruzgarChecklist || []).filter(x => x.id !== item.id);
-    } else {
-      state.bulutChecklist = (state.bulutChecklist || []).filter(x => x.id !== item.id);
+  on(del, "click", function(){
+    var ex = state.exitChecklist;
+    ex.items = ex.items.filter(function(x){ return x.id !== item.id; });
+    if (ex.bulutDone && ex.bulutDone.hasOwnProperty(item.id)) delete ex.bulutDone[item.id];
+    if (ex.ruzgarDone && ex.ruzgarDone.hasOwnProperty(item.id)) delete ex.ruzgarDone[item.id];
+    if (!ex.items.length){
+      ex.items = buildDefaultExitItems();
+      ex.bulutDone = createDoneMapFromItems(ex.items);
+      ex.ruzgarDone = createDoneMapFromItems(ex.items);
     }
     saveState(state);
     renderEditLists();
     renderAll();
   });
 
-  li.appendChild(time);
   li.appendChild(text);
   li.appendChild(del);
   return li;
 }
 
-function addTodayItem(){
-  const text = (todayTextInput.value || "").trim();
-  if (!text) return;
-  const time = normalizeTime(todayTimeInput.value);
+function makeNoteEditRow(item){
+  var li = document.createElement("li");
+  li.className = "editItem";
 
-  state.today.schedule = state.today.schedule || [];
-  if (state.today.schedule.length >= 8){
-    // max 8 (UI)
-    state.today.schedule = state.today.schedule.slice(0, 7);
-  }
-  state.today.schedule.push({ id: uid(), time, text, done:false });
+  var text = document.createElement("input");
+  text.type = "text";
+  text.placeholder = "Not";
+  text.value = item.text || "";
+  on(text, "input", function(){ item.text = String(text.value || ""); });
 
-  todayTextInput.value = "";
-  todayTimeInput.value = "";
-  saveState(state);
-  renderEditLists();
-  renderAll();
+  var del = document.createElement("button");
+  del.type = "button";
+  del.className = "delBtn";
+  del.textContent = "Sil";
+  on(del, "click", function(){
+    var items = state.notes && state.notes.items ? state.notes.items : [];
+    state.notes.items = items.filter(function(x){ return x.id !== item.id; });
+    saveState(state);
+    renderEditLists();
+    renderAll();
+  });
+
+  li.appendChild(text);
+  li.appendChild(del);
+  return li;
 }
 
-function addTomorrowItem(){
-  const text = (tomTextInput.value || "").trim();
-  if (!text) return;
-  const time = normalizeTime(tomTimeInput.value);
-
-  state.tomorrow.schedule = state.tomorrow.schedule || [];
-  if (state.tomorrow.schedule.length >= 3){
-    // max 3
-    state.tomorrow.schedule = state.tomorrow.schedule.slice(0, 2);
+function renderEditLists(){
+  if (!editExitItemsList || !editNotesList) return;
+  editNotesList.innerHTML = "";
+  editExitItemsList.innerHTML = "";
+  var i;
+  for (i = 0; i < Math.min(40, state.notes.items.length); i++){
+    editNotesList.appendChild(makeNoteEditRow(state.notes.items[i]));
   }
-  state.tomorrow.schedule.push({ id: uid(), time, text, done:false });
-
-  tomTextInput.value = "";
-  tomTimeInput.value = "";
-  saveState(state);
-  renderEditLists();
-  renderAll();
+  for (i = 0; i < Math.min(40, state.exitChecklist.items.length); i++){
+    editExitItemsList.appendChild(makeEditRow(state.exitChecklist.items[i], "exit"));
+  }
 }
 
-function addExitItem(group){
-  const isRuzgar = group === "ruzgar";
-  const input = isRuzgar ? newRuzgarCheckItemInput : newBulutCheckItemInput;
-  const text = (input.value || "").trim();
-  if (!text) return;
-
+function openModal(){
+  if (!modalBackdrop) return;
+  registerInteraction();
+  if (state.screenSaverMode) setScreenSaverMode(false);
   normalizeState(state);
-  const list = isRuzgar ? state.ruzgarChecklist : state.bulutChecklist;
-  list.push({ id: uid(), text, done:false });
+  if (endpointInput) endpointInput.value = state.settings.weatherEndpoint || "";
+  if (soundEnabledToggle) soundEnabledToggle.checked = !!state.settings.soundEnabled;
+  if (departureTimeInput) departureTimeInput.value = state.leaveTimeSettings.leaveTime || DEFAULT_LEAVE_TIME;
+  if (beforeMinutesInput) beforeMinutesInput.value = String(state.leaveTimeSettings.beforeMinutes || DEFAULT_BEFORE_MIN);
+  if (afterMinutesInput) afterMinutesInput.value = String(state.leaveTimeSettings.afterMinutes || DEFAULT_AFTER_MIN);
+  if (enableLateModeToggle) enableLateModeToggle.checked = !!state.leaveTimeSettings.enableLateMode;
+  if (screenSaverEnabledToggle) screenSaverEnabledToggle.checked = !!state.settings.screenSaverEnabled;
+  if (screenSaverTimeoutInput) screenSaverTimeoutInput.value = String(state.settings.screenSaverTimeoutMinutes || 10);
+  if (pixelShiftToggle) pixelShiftToggle.checked = !!state.settings.pixelShift;
 
-  input.value = "";
+  renderEditLists();
+  modalBackdrop.hidden = false;
+  setModalOpen(true);
+  setTimeout(function(){ if (endpointInput) endpointInput.focus(); }, 50);
+}
+
+function closeModal(){
+  if (!modalBackdrop) return;
+  modalBackdrop.hidden = true;
+  setModalOpen(false);
+  if (importActions) importActions.hidden = true;
+  if (importHint) importHint.textContent = "";
+  importStaged = null;
+}
+
+function addExitItem(){
+  var input = newExitItemInput;
+  var text = String(input && input.value || "").trim();
+  if (!text) return;
+  var newId = uid();
+  state.exitChecklist.items.push({ id: newId, text: text });
+  state.exitChecklist.bulutDone[newId] = false;
+  state.exitChecklist.ruzgarDone[newId] = false;
+  if (input) input.value = "";
   saveState(state);
   renderEditLists();
   renderAll();
 }
 
-function normalizeTime(v){
-  // "0930" -> "09:30", "9:3" -> "09:03"
-  const s = (v || "").trim();
-  if (!s) return "";
-  const digits = s.replace(/[^\d]/g, "");
-  if (digits.length === 4){
-    return `${digits.slice(0,2)}:${digits.slice(2,4)}`;
-  }
-  if (s.includes(":")){
-    const [h,m] = s.split(":");
-    if (h != null && m != null){
-      return `${pad2(Number(h))}:${pad2(Number(m))}`;
-    }
-  }
-  return s;
-}
-
-function normalizeDepartureTime(v){
-  const t = normalizeTime(v);
-  if (!/^\d{2}:\d{2}$/.test(t)) return DEFAULT_DEPARTURE_TIME;
-  const [h, m] = t.split(":").map(Number);
-  return `${pad2(clamp(h, 0, 23))}:${pad2(clamp(m, 0, 59))}`;
+function addNoteItem(){
+  var text = String(newNoteItemInput && newNoteItemInput.value || "").replace(/^\s+|\s+$/g, "");
+  if (!text) return;
+  state.notes.items.push({ id: uid(), text: text, done: false });
+  if (newNoteItemInput) newNoteItemInput.value = "";
+  saveState(state);
+  renderEditLists();
+  renderAll();
 }
 
 function saveFromModal(){
-  if (!endpointInput || !notesInput || !departureTimeInput) return;
   normalizeState(state);
-  const endpoint = (endpointInput.value || "").trim();
-  state.settings.weatherEndpoint = endpoint;
-  writeStorage(ENDPOINT_STORAGE_KEY, endpoint);
+  state.settings.weatherEndpoint = String(endpointInput && endpointInput.value || "").trim();
+  writeStorage(ENDPOINT_STORAGE_KEY, state.settings.weatherEndpoint);
+  state.settings.pixelShift = !!(pixelShiftToggle && pixelShiftToggle.checked);
+  state.settings.soundEnabled = !!(soundEnabledToggle && soundEnabledToggle.checked);
 
-  state.settings.pixelShift = !!pixelShiftToggle.checked;
-  state.persistentNotes = notesInput.value || "";
-  state.leaveTimeSettings.leaveTime = normalizeDepartureTime(departureTimeInput.value);
-  state.leaveTimeSettings.beforeMinutes = clamp(Number(beforeMinutesInput.value) || 10, 0, 240);
-  state.leaveTimeSettings.afterMinutes = clamp(Number(afterMinutesInput.value) || 10, 0, 240);
-  state.leaveTimeSettings.enableLateMode = !!enableLateModeToggle.checked;
+  state.leaveTimeSettings.leaveTime = normalizeLeaveTime(departureTimeInput && departureTimeInput.value || DEFAULT_LEAVE_TIME);
+  state.leaveTimeSettings.beforeMinutes = clamp(Number(beforeMinutesInput && beforeMinutesInput.value) || DEFAULT_BEFORE_MIN, 0, 240);
+  state.leaveTimeSettings.afterMinutes = clamp(Number(afterMinutesInput && afterMinutesInput.value) || DEFAULT_AFTER_MIN, 0, 240);
+  state.leaveTimeSettings.enableLateMode = !!(enableLateModeToggle && enableLateModeToggle.checked);
+  state.settings.screenSaverEnabled = !!(screenSaverEnabledToggle && screenSaverEnabledToggle.checked);
+  state.settings.screenSaverTimeoutMinutes = clamp(Number(screenSaverTimeoutInput && screenSaverTimeoutInput.value) || 10, 1, 240);
+
+  var ex = state.exitChecklist || {};
+  ex.items = normalizeExitItems(ex.items);
+  if (!ex.items.length) ex.items = buildDefaultExitItems();
+  ex.bulutDone = normalizeDoneMap(ex.bulutDone, ex.items);
+  ex.ruzgarDone = normalizeDoneMap(ex.ruzgarDone, ex.items);
+  state.exitChecklist = ex;
+  state.notes.items = normalizeNotesItems(state.notes.items);
+  if (state.settings.soundEnabled) unlockAudioContext();
 
   saveState(state);
   renderAll();
   applyPixelShiftEnabled(state.settings.pixelShift);
-
-  // hava endpoint değiştiyse hemen dene
-  fetchWeather().catch(()=>{});
+  fetchWeather();
   closeModal();
 }
 
-// ---------- Backup Import/Export ----------
+function downloadJson(filename, obj){
+  var blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function exportData(){
-  const data = loadState(); // en güncel
-  downloadJson("doorboard-backup.json", data);
+  downloadJson("doorboard-backup.json", state);
 }
 
 function validateImported(obj){
-  // Çok sıkı olmayan doğrulama: temel alanlar var mı?
-  if (!obj || typeof obj !== "object") return { ok:false, msg:"JSON nesnesi değil." };
-  if (!obj.settings || !obj.today || !obj.tomorrow) return { ok:false, msg:"Zorunlu alanlar eksik (settings/today/tomorrow)." };
-  if (typeof obj.today.date !== "string") return { ok:false, msg:"today.date geçersiz." };
-  if (!Array.isArray(obj.today.schedule)){
-    return { ok:false, msg:"today.schedule alani gecersiz." };
-  }
-  return { ok:true, msg:"OK" };
+  if (!obj || typeof obj !== "object") return { ok: false, msg: "JSON nesnesi değil." };
+  if (!obj.settings && !obj.exitChecklist && !obj.notes && !obj.persistentNotes && !obj.today) return { ok: false, msg: "Desteklenen veri alanı bulunamadı." };
+  return { ok: true, msg: "OK" };
 }
 
 function stageImport(file){
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    const text = String(reader.result || "");
-    const obj = safeJsonParse(text);
-    const v = validateImported(obj);
+  var reader = new FileReader();
+  reader.onload = function(){
+    var text = String(reader.result || "");
+    var obj = safeJsonParse(text);
+    var v = validateImported(obj);
     if (!v.ok){
-      importHint.textContent = `İçe aktarma hatası: ${v.msg}`;
-      importActions.hidden = true;
+      if (importHint) importHint.textContent = "İçe aktarma hatası: " + v.msg;
+      if (importActions) importActions.hidden = true;
       importStaged = null;
       return;
     }
     importStaged = obj;
-    importHint.textContent = "Dosya doğrulandı.";
-    importActions.hidden = false;
+    if (importHint) importHint.textContent = "Dosya doğrulandı.";
+    if (importActions) importActions.hidden = false;
   };
-  reader.onerror = () => {
-    importHint.textContent = "Dosya okunamadı.";
-    importActions.hidden = true;
+  reader.onerror = function(){
+    if (importHint) importHint.textContent = "Dosya okunamadı.";
+    if (importActions) importActions.hidden = true;
     importStaged = null;
   };
   reader.readAsText(file);
@@ -1336,168 +1864,149 @@ function doImport(mode){
   if (mode === "overwrite"){
     state = importStaged;
     migrateStateSchema(state, importStaged);
-  } else if (mode === "merge"){
-    // defaultState + currentState + importStaged (import kazanır)
-    const base = defaultState();
-    const cur = loadState();
+  } else {
+    var base = defaultState();
+    var cur = loadState();
     state = mergeDeep(mergeDeep(base, cur), importStaged);
     migrateStateSchema(state, importStaged);
   }
 
-  // ids olmayan elemanlara id ver
-  ensureIds(state);
   normalizeState(state);
-
   saveState(state);
+  writeStorage(ENDPOINT_STORAGE_KEY, state.settings.weatherEndpoint || "");
 
-  // endpoint mirror
-  try {
-    if (state?.settings?.weatherEndpoint != null){
-      writeStorage(ENDPOINT_STORAGE_KEY, state.settings.weatherEndpoint);
+  renderAll();
+  applyPixelShiftEnabled(state.settings.pixelShift);
+  fetchWeather();
+
+  if (importHint) importHint.textContent = "İçe aktarma tamamlandı.";
+  if (importActions) importActions.hidden = true;
+  importStaged = null;
+}
+
+function tryRegisterSW(){
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.register("./sw.js").catch(function(){});
+}
+
+function renderAll(){
+  normalizeState(state);
+  maybeRollover();
+  if (!state.settings.screenSaverEnabled && state.screenSaverMode){
+    state.screenSaverMode = false;
+  }
+  applyTheme();
+  renderClock();
+  renderNet();
+  updateLastWeatherLine();
+
+  renderNotes();
+  renderExitMatrix();
+  renderKidWishes();
+
+  if (pixelShiftToggle) pixelShiftToggle.checked = !!state.settings.pixelShift;
+  if (modeChip) modeChip.textContent = state.settings.theme === "light" ? "Aydınlık" : "Karanlık";
+  renderSoundToggle();
+  setScreenSaverMode(!!state.screenSaverMode);
+}
+
+function bindEvents(){
+  on(soundToggleBtn, "click", function(){
+    registerInteraction();
+    state.settings.soundEnabled = !state.settings.soundEnabled;
+    if (state.settings.soundEnabled){
+      unlockAudioContext();
+      if (!audioUnlocked) showSoundHintIfNeeded();
+    } else {
+      setSoundHintVisible(false);
     }
-  } catch {}
+    saveState(state);
+    renderSoundToggle();
+  });
+  on(editBtn, "click", openModal);
+  on(closeModalBtn, "click", closeModal);
+  on(cancelBtn, "click", closeModal);
+  on(saveBtn, "click", saveFromModal);
+  on(modalBackdrop, "click", function(e){ if (e.target === modalBackdrop) closeModal(); });
 
-  renderAll();
-  applyPixelShiftEnabled(!!state.settings.pixelShift);
-  fetchWeather().catch(()=>{});
-  importHint.textContent = "İçe aktarma tamamlandı.";
-  importActions.hidden = true;
-  importStaged = null;
+  on(addNoteItemBtn, "click", addNoteItem);
+  on(newNoteItemInput, "keydown", function(e){ if (e.key === "Enter") addNoteItem(); });
+  on(addExitItemBtn, "click", addExitItem);
+  on(newExitItemInput, "keydown", function(e){ if (e.key === "Enter") addExitItem(); });
+
+  on(exportBtn, "click", exportData);
+  on(importFile, "change", function(e){
+    var f = e.target && e.target.files ? e.target.files[0] : null;
+    stageImport(f);
+  });
+  on(importOverwriteBtn, "click", function(){ doImport("overwrite"); });
+  on(importMergeBtn, "click", function(){ doImport("merge"); });
+  on(importCancelBtn, "click", function(){
+    if (importActions) importActions.hidden = true;
+    if (importHint) importHint.textContent = "İçe aktarma iptal edildi.";
+    importStaged = null;
+  });
+
+  on(resetChecklistBtn, "click", function(){
+    resetExitDoneStates();
+    saveState(state);
+    renderAll();
+  });
+  on(themeToggleBtn, "click", toggleTheme);
+
+  on(document, "keydown", function(e){
+    if (e.key === "Escape" && modalBackdrop && !modalBackdrop.hidden) closeModal();
+  });
+
+  on(window, "online", function(){ renderNet(); fetchWeather(); });
+  on(window, "offline", function(){ renderNet(); fetchWeather(); });
+
+  on(window, "touchstart", function(){ registerInteraction(); }, { passive: true });
+  on(window, "mousedown", function(){ registerInteraction(); });
+  on(window, "keydown", function(){ registerInteraction(); });
+  on(window, "scroll", function(){ registerInteraction(); }, { passive: true });
+  on(screenSaverLayerEl, "touchstart", function(){ registerInteraction(); }, { passive: true });
+  on(screenSaverLayerEl, "mousedown", function(){ registerInteraction(); });
 }
 
-function ensureIds(s){
-  normalizeState(s);
-}
-
-// ---------- Buttons ----------
-function on(el, event, handler){
-  if (!el) return;
-  el.addEventListener(event, handler);
-}
-
-on(editBtn, "click", openModal);
-on(closeModalBtn, "click", closeModal);
-on(cancelBtn, "click", closeModal);
-on(saveBtn, "click", saveFromModal);
-on(modalBackdrop, "click", (e) => {
-  if (e.target === modalBackdrop){
-    closeModal();
-  }
-});
-
-on(addTodayBtn, "click", addTodayItem);
-on(addTomBtn, "click", addTomorrowItem);
-on(addRuzgarCheckItemBtn, "click", () => addExitItem("ruzgar"));
-on(addBulutCheckItemBtn, "click", () => addExitItem("bulut"));
-
-on(todayTextInput, "keydown", (e) => { if (e.key === "Enter") addTodayItem(); });
-on(tomTextInput, "keydown", (e) => { if (e.key === "Enter") addTomorrowItem(); });
-on(newRuzgarCheckItemInput, "keydown", (e) => { if (e.key === "Enter") addExitItem("ruzgar"); });
-on(newBulutCheckItemInput, "keydown", (e) => { if (e.key === "Enter") addExitItem("bulut"); });
-
-on(exportBtn, "click", exportData);
-on(importFile, "change", (e) => stageImport(e.target.files?.[0]));
-
-on(importOverwriteBtn, "click", () => doImport("overwrite"));
-on(importMergeBtn, "click", () => doImport("merge"));
-on(importCancelBtn, "click", () => {
-  importActions.hidden = true;
-  importHint.textContent = "İçe aktarma iptal edildi.";
-  importStaged = null;
-});
-
-on(clearDoneBtn, "click", () => {
-  clearDoneInToday();
-});
-
-on(autoClearToggle, "change", () => {
-  state.settings.autoClearDoneAtNight = !!autoClearToggle.checked;
-  saveState(state);
-});
-
-on(resetChecklistBtn, "click", () => {
-  normalizeState(state);
-  for (const it of (state.ruzgarChecklist || [])) it.done = false;
-  for (const it of (state.bulutChecklist || [])) it.done = false;
-  saveState(state);
-  renderAll();
-});
-
-on(themeToggleBtn, "click", toggleTheme);
-
-// Modal ESC close
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !modalBackdrop.hidden){
-    closeModal();
-  }
-});
-
-// Online/offline events
-window.addEventListener("online", () => { renderNet(); fetchWeather().catch(()=>{}); });
-window.addEventListener("offline", () => { renderNet(); fetchWeather().catch(()=>{}); });
-
-// ---------- Init ----------
 function init(){
-  storagePersistent = isPersistentStorageAvailable();
-  if (!storagePersistent && runtimeWarningEl){
+  if (!isPersistentStorageAvailable() && runtimeWarningEl){
     runtimeWarningEl.hidden = false;
-    runtimeWarningEl.textContent = "Uyari: localStorage kapali. Veriler sadece bu oturumda tutulur.";
+    runtimeWarningEl.textContent = "Uyarı: localStorage kapalı. Veriler sadece bu oturumda tutulur.";
   }
 
   ensureModalTopLayer();
-
-  // Gün değişimi kontrolü
+  normalizeState(state);
+  lastInteractionTimestamp = Date.now();
   maybeRollover();
-
-  // İlk render
   renderAll();
+  if (state.settings.soundEnabled) unlockAudioContext();
+  if (state.settings.soundEnabled && !audioUnlocked){
+    showSoundHintIfNeeded();
+  }
 
-  // Weather: önce cache göster, sonra fetch
-  if (state?.weatherCache?.payload){
+  if (state.weatherCache && state.weatherCache.payload){
     setWeatherUI(state.weatherCache.payload, isOnline() ? "Son kayıt (yenileniyor…)" : "Offline: son kayıt");
   } else {
     setWeatherUI(null, isOnline() ? "Hava alınıyor…" : "Offline");
   }
   updateLastWeatherLine();
 
-  // Timers
-  setInterval(() => {
+  setInterval(function(){
     renderClock();
     renderNet();
-    // nadiren rollover kontrol
-    if (new Date().getMinutes() % 5 === 0 && new Date().getSeconds() === 0){
-      maybeRollover();
-    }
+    var d = new Date();
+    if (d.getMinutes() % 5 === 0 && d.getSeconds() === 0) maybeRollover();
   }, CLOCK_TICK_MS);
 
-  // Weather refresh
-  fetchWeather().catch(()=>{});
-  setInterval(() => {
-    // online ise yenile
-    if (isOnline()) fetchWeather().catch(()=>{});
+  fetchWeather();
+  setInterval(function(){
+    if (isOnline()) fetchWeather();
   }, WEATHER_REFRESH_MS);
 
-  // Pixel shift
-  applyPixelShiftEnabled(!!state.settings.pixelShift);
-
-  // Service Worker (opsiyonel; GitHub Pages üzerinde çalışır, file:// altında çalışmayabilir)
+  applyPixelShiftEnabled(state.settings.pixelShift);
+  bindEvents();
   tryRegisterSW();
 }
-
-function tryRegisterSW(){
-  if (!("serviceWorker" in navigator)) return;
-
-  // file:// altında genelde service worker kayıt olmaz; hata yut.
-  navigator.serviceWorker.register("./sw.js").catch((e) => {
-    console.info("SW register skipped/failed:", e?.message || e);
-  });
-}
-
-// ---------- Minimal SW file injection (no extra file requested) ----------
-/**
- * İstenilen dosyalar listesinde sw.js yok ama offline deneyimini iyileştirmek için
- * runtime'da oluşturamayız. Yine de register çağrısı var; eğer kullanıcı sw.js eklerse devreye girer.
- * (README'de not var.)
- */
 
 init();
