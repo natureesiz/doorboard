@@ -35,6 +35,7 @@ var pixelShiftTimer = null;
 var pixelShiftPhase = 0;
 var isModalOpen = false;
 var lastLeaveDeltaText = "";
+var lastLeaveRenderMode = "";
 var lastFullscreenSecond = null;
 var wallpaperLoadToken = 0;
 var lastInteractionTimestamp = Date.now();
@@ -619,10 +620,13 @@ var netDot = $("#netDot");
 var netText = $("#netText");
 var lastWeatherEl = $("#lastWeather");
 
-var leaveBlockEl = $("#leaveBlock");
+var leaveCenterBlockEl = $("#leaveBlock");
 var leaveOverlayEl = $("#leaveOverlay");
-var leaveTargetTimeEl = $("#leaveTargetTime");
-var leaveDeltaEl = $("#leaveDelta");
+var leaveTargetTimeCenterEl = $("#leaveTargetTime");
+var leaveDeltaCenterEl = $("#leaveDelta");
+var leaveAnchorBlockEl = $("#leaveAnchorBlock");
+var leaveTargetTimeAnchorEl = $("#leaveTargetTimeAnchor");
+var leaveDeltaAnchorEl = $("#leaveDeltaAnchor");
 
 var fullscreenCountdownEl = $("#fullscreenCountdown");
 var fullscreenCountdownValueEl = $("#fullscreenCountdownValue");
@@ -687,6 +691,8 @@ var themeToggleBtn = $("#themeToggleBtn");
 var modeChip = $("#modeChip");
 var pixelShiftWrap = $("#pixelShiftWrap");
 var runtimeWarningEl = $("#runtimeWarning");
+var topbarEl = $(".topbar");
+var exitAnchorEl = $("#exitAnchor");
 
 // ---------- Helpers ----------
 function on(el, event, handler, opts){
@@ -841,14 +847,14 @@ function setScreenSaverMode(enabled){
 function buildScreenSaverWeatherLines(){
   var payload = state.weatherCache && state.weatherCache.payload ? state.weatherCache.payload : null;
   if (!payload){
-    return ["Sabah: veri yok", "Öğle: veri yok", "Gece: bulutlu/serin"];
+    return ["Sabah: veri yok", "Öğleden sonra: veri yok", "Gece: bulutlu/serin"];
   }
   var sky = String(payload.skyLabel || "bulutlu").toLowerCase();
   var rain = String(payload.rainLabel || "yok").toLowerCase();
   var minTemp = (typeof payload.minTemp === "number") ? payload.minTemp : null;
 
   var morning = "Sabah: " + (rain.indexOf("var") > -1 ? "yağış ihtimali" : (sky.indexOf("güneş") > -1 || sky.indexOf("gunes") > -1 ? "açık" : sky));
-  var noon = "Öğle: " + (rain.indexOf("yüksek") > -1 || rain.indexOf("yuksek") > -1 ? "yağış ihtimali yüksek" : (rain.indexOf("var") > -1 ? "yağış ihtimali" : sky));
+  var noon = "Öğleden sonra: " + (rain.indexOf("yüksek") > -1 || rain.indexOf("yuksek") > -1 ? "yağış ihtimali yüksek" : (rain.indexOf("var") > -1 ? "yağış ihtimali" : sky));
   var night = "Gece: ";
   if (minTemp != null && minTemp <= 8) night += "serin";
   else if (sky.indexOf("açık") > -1 || sky.indexOf("acik") > -1) night += "açık";
@@ -906,17 +912,63 @@ function applyIdleModeTick(nowTs){
   }
 }
 
+function updateTopbarHeightVar(){
+  if (!topbarEl || !document || !document.documentElement) return;
+  var h = Math.round(Number(topbarEl.offsetHeight) || 84);
+  if (h < 72) h = 72;
+  document.documentElement.style.setProperty("--topbar-height", String(h) + "px");
+}
+
+function setLeaveModeVisible(mode){
+  var showAnchor = mode === "anchor";
+  var showCenter = mode === "center";
+
+  if (exitAnchorEl){
+    if (showAnchor){
+      exitAnchorEl.hidden = false;
+      exitAnchorEl.classList.add("is-visible");
+    } else {
+      exitAnchorEl.classList.remove("is-visible");
+      setTimeout(function(){
+        if (!exitAnchorEl.classList.contains("is-visible")) exitAnchorEl.hidden = true;
+      }, 230);
+    }
+  }
+  if (leaveAnchorBlockEl) leaveAnchorBlockEl.classList.toggle("is-visible", showAnchor);
+  if (leaveOverlayEl) leaveOverlayEl.classList.toggle("is-visible", showCenter);
+  if (leaveCenterBlockEl) leaveCenterBlockEl.classList.toggle("is-visible", showCenter);
+}
+
+function setLeaveValues(deltaText, targetText, activeMode){
+  var activeDeltaEl = (activeMode === "center") ? leaveDeltaCenterEl : leaveDeltaAnchorEl;
+
+  if (leaveTargetTimeCenterEl) leaveTargetTimeCenterEl.textContent = targetText;
+  if (leaveTargetTimeAnchorEl) leaveTargetTimeAnchorEl.textContent = targetText;
+  if (leaveDeltaCenterEl) leaveDeltaCenterEl.textContent = deltaText;
+  if (leaveDeltaAnchorEl) leaveDeltaAnchorEl.textContent = deltaText;
+
+  if (activeDeltaEl && (lastLeaveDeltaText !== deltaText || lastLeaveRenderMode !== activeMode)){
+    activeDeltaEl.classList.remove("tick");
+    void activeDeltaEl.offsetWidth;
+    activeDeltaEl.classList.add("tick");
+  }
+  lastLeaveDeltaText = deltaText;
+  lastLeaveRenderMode = activeMode;
+}
+
 function renderLeaveStatus(now){
-  if (!leaveBlockEl || !leaveTargetTimeEl || !leaveDeltaEl) return;
+  if (!leaveCenterBlockEl || !leaveTargetTimeCenterEl || !leaveDeltaCenterEl) return;
   var info = parseLeaveTarget(now);
   var diffSec = Math.floor((now.getTime() - info.target.getTime()) / 1000); // after => positive
   var beforeSec = (Number(state.leaveTimeSettings.beforeMinutes) || DEFAULT_BEFORE_MIN) * 60;
   var afterSec = (Number(state.leaveTimeSettings.afterMinutes) || DEFAULT_AFTER_MIN) * 60;
   var within = (diffSec >= -beforeSec && diffSec <= afterSec);
-
-  leaveTargetTimeEl.textContent = info.raw;
-  leaveBlockEl.classList.toggle("is-visible", within);
-  if (leaveOverlayEl) leaveOverlayEl.classList.toggle("is-visible", within);
+  var secondsToLeave = -diffSec;
+  var mode = "";
+  if (within){
+    mode = (secondsToLeave > 60) ? "anchor" : "center";
+  }
+  setLeaveModeVisible(mode);
 
   if (within){
     var targetKey = todayISO(now) + "|" + info.raw;
@@ -924,17 +976,12 @@ function renderLeaveStatus(now){
     var mm = pad2(Math.floor(absSec / 60));
     var ss = pad2(absSec % 60);
     var text = mm + ":" + ss;
-    if (lastLeaveDeltaText !== text){
-      leaveDeltaEl.textContent = text;
-      leaveDeltaEl.classList.remove("tick");
-      void leaveDeltaEl.offsetWidth;
-      leaveDeltaEl.classList.add("tick");
-      lastLeaveDeltaText = text;
-    }
+    setLeaveValues(text, info.raw, mode);
 
-    var remain = -diffSec;
+    var remain = secondsToLeave;
     var blink = remain > 0 && remain <= 30;
-    leaveBlockEl.classList.toggle("is-blink", blink);
+    if (leaveCenterBlockEl) leaveCenterBlockEl.classList.toggle("is-blink", blink && mode === "center");
+    if (leaveAnchorBlockEl) leaveAnchorBlockEl.classList.remove("is-blink");
 
     if (remain >= 0 && remain <= 10){
       var secDisplay = Math.ceil(remain);
@@ -951,11 +998,13 @@ function renderLeaveStatus(now){
       hideFullscreenCountdown();
     }
   } else {
-    leaveBlockEl.classList.remove("is-blink");
-    if (leaveOverlayEl) leaveOverlayEl.classList.remove("is-visible");
+    if (leaveCenterBlockEl) leaveCenterBlockEl.classList.remove("is-blink");
+    if (leaveAnchorBlockEl) leaveAnchorBlockEl.classList.remove("is-blink");
+    setLeaveModeVisible("");
     hideFullscreenCountdown();
     lastCountdownSoundSecond = null;
     lastCountdownSoundTargetKey = "";
+    lastLeaveRenderMode = "";
   }
 
   var late = now.getTime() > info.target.getTime();
@@ -1892,6 +1941,7 @@ function tryRegisterSW(){
 function renderAll(){
   normalizeState(state);
   maybeRollover();
+  updateTopbarHeightVar();
   if (!state.settings.screenSaverEnabled && state.screenSaverMode){
     state.screenSaverMode = false;
   }
@@ -1960,6 +2010,8 @@ function bindEvents(){
 
   on(window, "online", function(){ renderNet(); fetchWeather(); });
   on(window, "offline", function(){ renderNet(); fetchWeather(); });
+  on(window, "resize", function(){ updateTopbarHeightVar(); renderLeaveStatus(new Date()); });
+  on(window, "orientationchange", function(){ updateTopbarHeightVar(); renderLeaveStatus(new Date()); });
 
   on(window, "touchstart", function(){ registerInteraction(); }, { passive: true });
   on(window, "mousedown", function(){ registerInteraction(); });
@@ -1977,6 +2029,7 @@ function init(){
 
   ensureModalTopLayer();
   normalizeState(state);
+  updateTopbarHeightVar();
   lastInteractionTimestamp = Date.now();
   maybeRollover();
   renderAll();

@@ -49,6 +49,7 @@
 
     <main class="grid" role="main">
       <section class="card" id="cardWeather" aria-labelledby="wTitle">
+        <div class="sectionTitle weatherSectionTitle">Hava Durumu</div>
         <div class="cardHead">
           <h2 id="wTitle">İzmir • Bugün</h2>
           <div class="subtle" id="wSub">08:00–18:00 özeti</div>
@@ -75,6 +76,7 @@
             <li class="muted">Hava verisi yok. Son kayıt varsa gösterilecek.</li>
           </ul>
           <div class="hint" id="wHint" aria-live="polite"></div>
+          <div class="weatherTimeInfo">Sabah: 08:00-13:00 • Öğleden sonra: 13:00-18:00 • Gece: 18:00-08:00</div>
         </div>
       </section>
 
@@ -117,6 +119,16 @@
         <div class="runtimeWarning" id="runtimeWarning" hidden></div>
       </div>
     </footer>
+  </div>
+
+  <div class="exitAnchor" id="exitAnchor" aria-hidden="true" hidden>
+    <div class="leaveBlock leaveAnchorBlock" id="leaveAnchorBlock" aria-live="polite">
+      <div class="leaveLabel">Evden Çıkış</div>
+      <div class="leaveMain">
+        <span class="leaveDelta" id="leaveDeltaAnchor">00:08</span>
+      </div>
+      <div class="leaveTargetSub" id="leaveTargetTimeAnchor">07:35</div>
+    </div>
   </div>
 
   <div class="centerLeaveOverlay" id="leaveOverlay" aria-hidden="true">
@@ -257,7 +269,7 @@
       <div class="screenSaverDate" id="ssDateLine">--</div>
       <ul class="screenSaverWeather" id="ssWeatherLines">
         <li>Sabah: veri yok</li>
-        <li>Öğle: veri yok</li>
+        <li>Öğleden sonra: veri yok</li>
         <li>Gece: bulutlu</li>
       </ul>
     </div>
