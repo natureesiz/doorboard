@@ -637,12 +637,15 @@ var ssMmEl = $("#ssMm");
 var ssDateLineEl = $("#ssDateLine");
 var ssWeatherLinesEl = $("#ssWeatherLines");
 
-var bgEl = $("#bg");
+var bgEl = $("#wallpaperLayer");
+if (!bgEl) bgEl = $("#bg");
 
 var wSky = $("#wSky");
 var wRain = $("#wRain");
 var wTemp = $("#wTemp");
-var wWind = $("#wWind");
+var wMorning = $("#wMorning");
+var wAfternoon = $("#wAfternoon");
+var wNight = $("#wNight");
 var wTips = $("#wTips");
 var wHint = $("#wHint");
 var wIcon = $("#wIcon");
@@ -843,23 +846,49 @@ function setScreenSaverMode(enabled){
   }
 }
 
+function buildDayForecastLines(payload){
+  var sky = String(payload && payload.skyLabel ? payload.skyLabel : "bulutlu").toLowerCase();
+  var rain = String(payload && payload.rainLabel ? payload.rainLabel : "yok").toLowerCase();
+  var minTemp = (payload && typeof payload.minTemp === "number") ? payload.minTemp : null;
+  var hasRain = rain.indexOf("var") > -1;
+  var highRain = (rain.indexOf("yüksek") > -1 || rain.indexOf("yuksek") > -1);
+
+  var morning = "bulutlu";
+  if (hasRain) morning = highRain ? "yağış riski" : "yağış ihtimali";
+  else if (sky.indexOf("güneş") > -1 || sky.indexOf("gunes") > -1 || sky.indexOf("açık") > -1 || sky.indexOf("acik") > -1) morning = "açık";
+  else if (sky.indexOf("az bulut") > -1 || sky.indexOf("parçalı") > -1 || sky.indexOf("parcali") > -1) morning = "az bulutlu";
+
+  var afternoon = "bulutlu";
+  if (hasRain) afternoon = highRain ? "yağış riski yüksek" : "yağış ihtimali";
+  else if (sky.indexOf("güneş") > -1 || sky.indexOf("gunes") > -1) afternoon = "açık";
+  else if (sky.indexOf("az bulut") > -1 || sky.indexOf("parçalı") > -1 || sky.indexOf("parcali") > -1) afternoon = "parçalı bulutlu";
+
+  var night = "bulutlu/serin";
+  if (minTemp != null && minTemp > 10){
+    if (sky.indexOf("güneş") > -1 || sky.indexOf("gunes") > -1 || sky.indexOf("açık") > -1 || sky.indexOf("acik") > -1) night = "açık";
+    else night = "bulutlu";
+  }
+
+  return [
+    "Sabah: " + morning,
+    "Öğleden sonra: " + afternoon,
+    "Gece: " + night
+  ];
+}
+
 function buildScreenSaverWeatherLines(){
   var payload = state.weatherCache && state.weatherCache.payload ? state.weatherCache.payload : null;
   if (!payload){
     return ["Sabah: veri yok", "Öğleden sonra: veri yok", "Gece: bulutlu/serin"];
   }
-  var sky = String(payload.skyLabel || "bulutlu").toLowerCase();
-  var rain = String(payload.rainLabel || "yok").toLowerCase();
-  var minTemp = (typeof payload.minTemp === "number") ? payload.minTemp : null;
-
-  var morning = "Sabah: " + (rain.indexOf("var") > -1 ? "yağış ihtimali" : (sky.indexOf("güneş") > -1 || sky.indexOf("gunes") > -1 ? "açık" : sky));
-  var noon = "Öğleden sonra: " + (rain.indexOf("yüksek") > -1 || rain.indexOf("yuksek") > -1 ? "yağış ihtimali yüksek" : (rain.indexOf("var") > -1 ? "yağış ihtimali" : sky));
-  var night = "Gece: ";
-  if (minTemp != null && minTemp <= 8) night += "serin";
-  else if (sky.indexOf("açık") > -1 || sky.indexOf("acik") > -1) night += "açık";
-  else night += "bulutlu";
-
-  return [morning, noon, night];
+  if (payload.dayParts && Object.prototype.toString.call(payload.dayParts) === "[object Array]" && payload.dayParts.length >= 3){
+    return [
+      String(payload.dayParts[0]),
+      String(payload.dayParts[1]),
+      String(payload.dayParts[2])
+    ];
+  }
+  return buildDayForecastLines(payload);
 }
 
 function updateScreenSaverShift(d){
@@ -1166,20 +1195,24 @@ function renderExitMatrix(){
   var i;
   for (i = 0; i < items.length; i++){
     (function(it){
-      var bDone = !!bMap[it.id];
       var rDone = !!rMap[it.id];
+      var bDone = !!bMap[it.id];
 
       var row = document.createElement("div");
       row.className = "matrixRow";
 
       var left = document.createElement("div");
       left.className = "matrixCell";
-      var bCb = document.createElement("button");
-      bCb.type = "button";
-      bCb.className = "matrixCb" + (bDone ? " is-checked" : "");
-      bCb.innerHTML = '<span class=\"matrixCbTick\">✓</span>';
-      on(bCb, "click", function(){ toggleKidDone("bulut", it.id); });
-      left.appendChild(bCb);
+      var rCb = document.createElement("button");
+      rCb.type = "button";
+      rCb.className = "matrixCb" + (rDone ? " is-checked" : "");
+      rCb.innerHTML = '<span class=\"matrixCbTick\">✓</span>';
+      on(rCb, "click", function(){ toggleKidDone("ruzgar", it.id); });
+      on(left, "click", function(e){
+        if (e.target === rCb || (e.target && e.target.parentNode === rCb)) return;
+        toggleKidDone("ruzgar", it.id);
+      });
+      left.appendChild(rCb);
 
       var center = document.createElement("div");
       center.className = "matrixLabel";
@@ -1194,12 +1227,16 @@ function renderExitMatrix(){
 
       var right = document.createElement("div");
       right.className = "matrixCell";
-      var rCb = document.createElement("button");
-      rCb.type = "button";
-      rCb.className = "matrixCb" + (rDone ? " is-checked" : "");
-      rCb.innerHTML = '<span class=\"matrixCbTick\">✓</span>';
-      on(rCb, "click", function(){ toggleKidDone("ruzgar", it.id); });
-      right.appendChild(rCb);
+      var bCb = document.createElement("button");
+      bCb.type = "button";
+      bCb.className = "matrixCb" + (bDone ? " is-checked" : "");
+      bCb.innerHTML = '<span class=\"matrixCbTick\">✓</span>';
+      on(bCb, "click", function(){ toggleKidDone("bulut", it.id); });
+      on(right, "click", function(e){
+        if (e.target === bCb || (e.target && e.target.parentNode === bCb)) return;
+        toggleKidDone("bulut", it.id);
+      });
+      right.appendChild(bCb);
 
       row.appendChild(left);
       row.appendChild(center);
@@ -1238,6 +1275,10 @@ function renderNotes(){
 
       li.appendChild(cb);
       li.appendChild(txt);
+      on(li, "click", function(e){
+        if (e.target === cb || (e.target && e.target.parentNode === cb)) return;
+        toggleNoteDone(it.id);
+      });
       notesList.appendChild(li);
     })(items[i]);
   }
@@ -1351,20 +1392,23 @@ function pickWallpaper(normalized){
   var wind = String(normalized.windLabel || "").toLowerCase();
   var minT = (typeof normalized.minTemp === "number") ? normalized.minTemp : null;
   var maxT = (typeof normalized.maxTemp === "number") ? normalized.maxTemp : null;
+  var hasRain = rain.indexOf("var") > -1;
+  var heavyRain = hasRain && (rain.indexOf("yüksek") > -1 || rain.indexOf("yuksek") > -1);
+  var stormy = (sky.indexOf("gök") > -1 || sky.indexOf("fırt") > -1 || sky.indexOf("firt") > -1 || sky.indexOf("şimş") > -1 || sky.indexOf("simsek") > -1);
+  var cold = ((minT != null && minT <= 6) || (maxT != null && maxT <= 10));
+  var windy = (wind.indexOf("kuvvet") > -1 || wind.indexOf("güçlü") > -1 || wind.indexOf("guclu") > -1);
+  var cloudy = (sky.indexOf("bulut") > -1 || sky.indexOf("kapalı") > -1 || sky.indexOf("kapali") > -1);
+  var partly = (sky.indexOf("az bulut") > -1 || sky.indexOf("parçalı") > -1 || sky.indexOf("parcali") > -1);
+  var sunny = (sky.indexOf("güneşli") > -1 || sky.indexOf("gunesli") > -1 || sky.indexOf("açık") > -1 || sky.indexOf("acik") > -1 || sky.indexOf("clear") > -1);
 
-  if (sky.indexOf("gök") > -1 || sky.indexOf("fırt") > -1 || sky.indexOf("firt") > -1) return "firtina.png";
-  if ((minT != null && minT <= 6) || (maxT != null && maxT <= 10)) return "soguk.png";
-  if (wind.indexOf("kuvvet") > -1) return "ruzgarli.png";
-
-  if (rain.indexOf("var") > -1){
-    if (rain.indexOf("yüksek") > -1 || rain.indexOf("yuksek") > -1) return "Yagisli.png";
-    return "az_yagisli.png";
-  }
-
-  if (sky.indexOf("güneşli") > -1 || sky.indexOf("gunesli") > -1 || sky.indexOf("açık") > -1 || sky.indexOf("acik") > -1) return "Gunesli.png";
-  if (sky.indexOf("az bulut") > -1 || sky.indexOf("parçalı") > -1 || sky.indexOf("parcali") > -1) return "az_bulutlu.png";
-  if (sky.indexOf("bulut") > -1 || sky.indexOf("kapalı") > -1 || sky.indexOf("kapali") > -1) return "bulutlu.png";
-
+  if (stormy) return "firtina.png";
+  if (heavyRain) return "Yagisli.png";
+  if (hasRain) return "az_yagisli.png";
+  if (cold) return "soguk.png";
+  if (windy) return "ruzgarli.png";
+  if (cloudy) return "bulutlu.png";
+  if (partly) return "az_bulutlu.png";
+  if (sunny) return "Gunesli.png";
   return "bulutlu.png";
 }
 
@@ -1390,11 +1434,14 @@ function applyWallpaper(filename){
 }
 
 function setWeatherUI(normalized, hintText){
+  var parts;
   if (!normalized){
     if (wSky) wSky.textContent = "—";
     if (wRain) wRain.textContent = "—";
     if (wTemp) wTemp.textContent = "—";
-    if (wWind) wWind.textContent = "—";
+    if (wMorning) wMorning.textContent = "Sabah: —";
+    if (wAfternoon) wAfternoon.textContent = "Öğleden sonra: —";
+    if (wNight) wNight.textContent = "Gece: —";
     if (wTips) wTips.innerHTML = '<li class="muted">Hava verisi yok.</li>';
     if (wHint) wHint.textContent = hintText || "";
     if (wIcon) wIcon.innerHTML = weatherIconSvg("cloudy");
@@ -1411,7 +1458,12 @@ function setWeatherUI(normalized, hintText){
       wTemp.textContent = "—";
     }
   }
-  if (wWind) wWind.textContent = normalized.windLabel || "—";
+  parts = (normalized.dayParts && Object.prototype.toString.call(normalized.dayParts) === "[object Array]" && normalized.dayParts.length >= 3)
+    ? normalized.dayParts
+    : buildDayForecastLines(normalized);
+  if (wMorning) wMorning.textContent = String(parts[0] || "Sabah: —");
+  if (wAfternoon) wAfternoon.textContent = String(parts[1] || "Öğleden sonra: —");
+  if (wNight) wNight.textContent = String(parts[2] || "Gece: —");
 
   if (wTips){
     wTips.innerHTML = "";
@@ -1522,9 +1574,11 @@ function normalizeWeather(payload){
       minTemp: payload.minTemp != null ? Number(payload.minTemp) : null,
       maxTemp: payload.maxTemp != null ? Number(payload.maxTemp) : null,
       windLabel: payload.windLabel || "—",
-      tips: (payload.tips && Object.prototype.toString.call(payload.tips) === "[object Array]") ? payload.tips : []
+      tips: (payload.tips && Object.prototype.toString.call(payload.tips) === "[object Array]") ? payload.tips : [],
+      dayParts: (payload.dayParts && Object.prototype.toString.call(payload.dayParts) === "[object Array]") ? payload.dayParts : []
     };
     if (!outReady.tips.length) outReady.tips = buildTips(outReady, {});
+    if (!outReady.dayParts.length) outReady.dayParts = buildDayForecastLines(outReady);
     return outReady;
   }
 
@@ -1543,9 +1597,11 @@ function normalizeWeather(payload){
     minTemp: minTemp,
     maxTemp: maxTemp,
     windLabel: windLabelFromSpeed(wind),
-    tips: []
+    tips: [],
+    dayParts: []
   };
   out.tips = buildTips(out, { rainLevel: rf.rainLevel });
+  out.dayParts = buildDayForecastLines(out);
   return out;
 }
 

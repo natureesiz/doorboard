@@ -13,6 +13,7 @@
     --radius:20px;
     --pad:18px;
     --itemFontSize:18px;
+    --checkboxVisualSize:36px;
     --accentTitleColor:#fbbf24;
   
     --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
@@ -45,6 +46,7 @@ body{
     touch-action:manipulation;
   }
 
+  .wallpaperLayer,
   .bgLayer{
     position:fixed;
     inset:0;
@@ -55,6 +57,7 @@ body{
     background-repeat:no-repeat;
     transition: background-image .25s ease;
   }
+  .wallpaperShade,
   .bgShade{
     position:fixed;
     inset:0;
@@ -137,7 +140,8 @@ body{
     align-items:flex-start;
     justify-content:center;
     min-width:0;
-    max-width:min(46vw, 460px);
+    width:46vw;
+    max-width:460px;
     opacity:0;
     transform:translateY(-4px);
     transition:opacity .22s ease, transform .22s ease;
@@ -543,6 +547,21 @@ body{
     font-weight:900;
     text-align:right;
   }
+  .forecastLines{
+    margin-top:6px;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+  }
+  .forecastLine{
+    font-size:16px;
+    font-weight:800;
+    color:var(--text);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:7px 10px;
+    line-height:1.2;
+  }
   
   .divider{
     height:1px;
@@ -659,6 +678,7 @@ body{
     display:flex;
     align-items:center;
     justify-content:center;
+    padding:6px 10px;
   }
   .matrixLabel{
     display:block;
@@ -683,14 +703,14 @@ body{
     padding:0 2px;
   }
   .matrixCb{
-    width:46px;
-    height:46px;
+    width:var(--checkboxVisualSize);
+    height:var(--checkboxVisualSize);
     border-radius:12px;
     border:2px solid var(--line);
     display:flex;
     align-items:center;
     justify-content:center;
-    font-size:22px;
+    font-size:18px;
     font-weight:900;
     cursor:pointer;
     user-select:none;
@@ -740,7 +760,7 @@ body{
     }
     .matrixHead{ font-size:18px; }
     .matrixHeadCenter{ font-size:14px; }
-    .matrixCb{ width:42px; height:42px; }
+    .matrixCb{ width:34px; height:34px; }
     .matrixWish{ font-size:20px; }
   }
   .itemLeft{
@@ -804,8 +824,12 @@ body{
     gap:10px;
     border:1px solid var(--line);
     border-radius:14px;
-    padding:10px;
+    padding:12px 10px;
     font-weight:800;
+    min-height:54px;
+  }
+  .notesChecklistItem .matrixCb{
+    flex:0 0 auto;
   }
   .notesChecklistText{
     min-width:0;

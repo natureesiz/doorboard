@@ -16,12 +16,12 @@
   <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="./assets/icon.svg" />
 
-  <link rel="stylesheet" href="./styles.css?v=20260212-2" />
+  <link rel="stylesheet" href="./styles.css?v=20260212-3" />
 </head>
 
 <body>
-  <div id="bg" class="bgLayer" aria-hidden="true"></div>
-  <div id="bgShade" class="bgShade" aria-hidden="true"></div>
+  <div id="wallpaperLayer" class="wallpaperLayer" aria-hidden="true"></div>
+  <div id="wallpaperShade" class="wallpaperShade" aria-hidden="true"></div>
 
   <div id="pixelShiftWrap" class="pixel-wrap">
     <header class="topbar">
@@ -75,7 +75,11 @@
           </div>
           <div class="row"><div class="k">Yağış</div><div class="v" id="wRain">—</div></div>
           <div class="row"><div class="k">Sıcaklık</div><div class="v" id="wTemp">—</div></div>
-          <div class="row"><div class="k">Rüzgar</div><div class="v" id="wWind">—</div></div>
+          <div class="forecastLines" id="wForecastLines" aria-live="polite">
+            <div class="forecastLine" id="wMorning">Sabah: —</div>
+            <div class="forecastLine" id="wAfternoon">Öğleden sonra: —</div>
+            <div class="forecastLine" id="wNight">Gece: —</div>
+          </div>
         </div>
 
         <div class="divider"></div>
@@ -97,15 +101,15 @@
         </div>
 
         <div class="exitMatrix" id="exitMatrix" aria-label="Çıkış kontrol matrisi">
-          <div class="matrixHead">Bulut</div>
-          <div class="matrixHead matrixHeadCenter">Öğeler</div>
           <div class="matrixHead">Rüzgar</div>
+          <div class="matrixHead matrixHeadCenter">Öğeler</div>
+          <div class="matrixHead">Bulut</div>
 
           <div id="exitMatrixRows" class="matrixRows"></div>
 
-          <div class="matrixWish" id="bulutWish" hidden>İyi dersler</div>
-          <div class="matrixWishCenter"></div>
           <div class="matrixWish" id="ruzgarWish" hidden>İyi dersler</div>
+          <div class="matrixWishCenter"></div>
+          <div class="matrixWish" id="bulutWish" hidden>İyi dersler</div>
         </div>
       </section>
 
@@ -275,6 +279,6 @@
     </div>
   </div>
 
-  <script src="./app.js?v=20260212-2" defer></script>
+  <script src="./app.js?v=20260212-3" defer></script>
 </body>
 </html>
